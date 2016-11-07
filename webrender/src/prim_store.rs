@@ -33,6 +33,7 @@ pub enum PrimitiveKind {
     Rectangle,
     TextRun,
     Image,
+    YuvImage,
     Border,
     Gradient,
     BoxShadow,
@@ -93,6 +94,14 @@ pub enum ImagePrimitiveKind {
 pub struct ImagePrimitiveCpu {
     pub kind: ImagePrimitiveKind,
     pub color_texture_id: TextureId,
+}
+
+#[derive(Debug)]
+pub struct YuvImagePrimitiveCpu {
+    pub key: ImageKey,
+    pub y_texture_id: TextureId,
+    pub u_texture_id: TextureId,
+    pub v_texture_id: TextureId,
 }
 
 #[derive(Debug, Clone)]
@@ -337,6 +346,7 @@ pub struct PrimitiveStore {
     pub cpu_bounding_rects: Vec<Option<DeviceRect>>,
     pub cpu_text_runs: Vec<TextRunPrimitiveCpu>,
     pub cpu_images: Vec<ImagePrimitiveCpu>,
+    pub cpu_yuv_images: Vec<YuvImagePrimitiveCpu>,
     pub cpu_gradients: Vec<GradientPrimitiveCpu>,
     pub cpu_metadata: Vec<PrimitiveMetadata>,
     pub cpu_borders: Vec<BorderPrimitiveCpu>,
@@ -360,6 +370,7 @@ impl PrimitiveStore {
             cpu_bounding_rects: Vec::new(),
             cpu_text_runs: Vec::new(),
             cpu_images: Vec::new(),
+            cpu_yuv_images: Vec::new(),
             cpu_gradients: Vec::new(),
             cpu_borders: Vec::new(),
             gpu_geometry: GpuStore::new(),
@@ -613,6 +624,10 @@ impl PrimitiveStore {
                     image_gpu.uv0 = cache_item.uv0;
                     image_gpu.uv1 = cache_item.uv1;
                 }
+                PrimitiveKind::YuvImage => {
+                    // TODO(nical)
+                    unimplemented!();
+                }
             }
         }
     }
@@ -806,6 +821,15 @@ impl PrimitiveStore {
                     }
                     ImagePrimitiveKind::WebGL(..) => {}
                 }
+            }
+            PrimitiveKind::YuvImage => {
+                let image_cpu = &mut self.cpu_yuv_images[metadata.cpu_prim_index.0];
+                prim_needs_resolve = true;
+
+                resource_cache.request_image(image_cpu.key, ImageRendering::Auto);
+
+                // TODO(nical): Currently assuming no tile_spacing for yuv images.
+                metadata.is_opaque = true;
             }
             PrimitiveKind::Gradient => {
                 let gradient = &mut self.cpu_gradients[metadata.cpu_prim_index.0];

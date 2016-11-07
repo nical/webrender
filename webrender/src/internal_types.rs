@@ -178,6 +178,7 @@ pub type DrawListId = FreeListItemId;
 pub enum TextureSampler {
     Slot0,
     Slot1,
+    Slot2,
     Cache,
     Data16,
     Data32,

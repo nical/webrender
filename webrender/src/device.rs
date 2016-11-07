@@ -1412,6 +1412,10 @@ impl Device {
                 if u_texture_1 != -1 {
                     gl::uniform_1i(u_texture_1, TextureSampler::Slot1 as i32);
                 }
+                let u_texture_2 = gl::get_uniform_location(program.id, "sTexture2");
+                if u_texture_2 != -1 {
+                    gl::uniform_1i(u_texture_1, TextureSampler::Slot2 as i32);
+                }
                 let u_device_pixel_ratio = gl::get_uniform_location(program.id, "uDevicePixelRatio");
                 if u_device_pixel_ratio != -1 {
                     gl::uniform_1f(u_device_pixel_ratio, self.device_pixel_ratio);

@@ -1488,6 +1488,10 @@ impl Renderer {
                                         max_prim_items,
                                         &projection);
                 }
+                &PrimitiveBatchData::YuvImage(ref ubo_data) => {
+                    //TODO(nical)
+                    unimplemented!();
+                }
                 &PrimitiveBatchData::Borders(ref ubo_data) => {
                     self.gpu_profile.add_marker(GPU_TAG_PRIM_BORDER);
                     let (shader, max_prim_items) = self.ps_border.get(&mut self.device, transform_kind);

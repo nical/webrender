@@ -8,6 +8,7 @@ precision highp float;
 
 uniform sampler2D sTexture0;
 uniform sampler2D sTexture1;
+uniform sampler2D sTexture2;
 uniform vec4 uBlendParams;
 uniform vec2 uDirection;
 uniform vec4 uFilterParams;
@@ -30,6 +31,9 @@ out vec4 oFragColor;
 #define COLOR_TEXTURE_0 sTexture0
 #define COLOR_TEXTURE_1 sTexture1
 #define MASK_TEXTURE sTexture1
+#define Y_TEXTURE sTexture0
+#define U_TEXTURE sTexture1
+#define V_TEXTURE sTexture2
 
 vec4 Texture(sampler2D sampler, vec2 texCoord) {
     return texture(sampler, texCoord);

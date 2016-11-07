@@ -70,6 +70,7 @@ impl AlphaBatchHelpers for PrimitiveStore {
             PrimitiveKind::Border => AlphaBatchKind::Border,
             PrimitiveKind::BoxShadow => AlphaBatchKind::BoxShadow,
             PrimitiveKind::Image => AlphaBatchKind::Image,
+            PrimitiveKind::YuvImage => AlphaBatchKind::YuvImage,
             PrimitiveKind::Rectangle => AlphaBatchKind::Rectangle,
             PrimitiveKind::TextRun => AlphaBatchKind::TextRun,
             PrimitiveKind::Gradient => {
@@ -93,6 +94,7 @@ impl AlphaBatchHelpers for PrimitiveStore {
             PrimitiveKind::Border |
             PrimitiveKind::BoxShadow |
             PrimitiveKind::Rectangle |
+            PrimitiveKind::YuvImage |
             PrimitiveKind::Gradient => TextureId::invalid(),
             PrimitiveKind::Image => {
                 let image_cpu = &self.cpu_images[metadata.cpu_prim_index.0];
@@ -117,6 +119,7 @@ impl AlphaBatchHelpers for PrimitiveStore {
             PrimitiveKind::Rectangle |
             PrimitiveKind::TextRun |
             PrimitiveKind::Image |
+            PrimitiveKind::YuvImage |
             PrimitiveKind::Gradient |
             PrimitiveKind::BoxShadow => true,
 
@@ -182,6 +185,10 @@ impl AlphaBatchHelpers for PrimitiveStore {
                     sub_index: 0,
                     user_data: [ 0, 0 ],
                 });
+            }
+            &mut PrimitiveBatchData::YuvImage(ref mut data) => {
+                // TODO[nical]
+                unimplemented!();
             }
             &mut PrimitiveBatchData::Borders(ref mut data) => {
                 for border_segment in 0..8 {
@@ -812,6 +819,7 @@ enum AlphaBatchKind {
     Rectangle,
     TextRun,
     Image,
+    YuvImage,
     Border,
     AlignedGradient,
     AngleGradient,
@@ -825,6 +833,7 @@ pub struct AlphaBatchKey {
     pub blend_mode: BlendMode,
     pub texture_0: SourceTexture,
     pub texture_1: SourceTexture,
+    pub texture_2: SourceTexture,
 }
 
 /// A reference to a texture, either an id assigned by the render backend or an
@@ -858,6 +867,7 @@ impl AlphaBatchKey {
             blend_mode: BlendMode::Alpha,
             texture_0: SourceTexture::invalid(),
             texture_1: SourceTexture::invalid(),
+            texture_2: SourceTexture::invalid(),
         }
     }
 
@@ -867,8 +877,10 @@ impl AlphaBatchKey {
             flags: AlphaBatchKeyFlags::new(TransformedRectKind::AxisAligned,
                                            false),
             blend_mode: BlendMode::Alpha,
+
             texture_0: SourceTexture::invalid(),
             texture_1: SourceTexture::invalid(),
+            texture_2: SourceTexture::invalid(),
         }
     }
 
@@ -884,6 +896,22 @@ impl AlphaBatchKey {
             blend_mode: blend_mode,
             texture_0: SourceTexture::Id(texture_id_0),
             texture_1: SourceTexture::Id(texture_id_1),
+            texture_2: SourceTexture::invalid(),
+        }
+    }
+
+    fn yuv_image(flags: AlphaBatchKeyFlags,
+                 y_texture: SourceTexture,
+                 u_texture: SourceTexture,
+                 v_texture: SourceTexture)
+                 -> AlphaBatchKey {
+        AlphaBatchKey {
+            kind: AlphaBatchKind::YuvImage,
+            flags: flags,
+            blend_mode: BlendMode::Alpha,
+            texture_0: y_texture,
+            texture_1: u_texture,
+            texture_2: v_texture,
         }
     }
 
@@ -894,7 +922,9 @@ impl AlphaBatchKey {
         (self.texture_0.is_invalid() || other.texture_0.is_invalid() ||
              self.texture_0 == other.texture_0) &&
             (self.texture_1.is_invalid() || other.texture_1.is_invalid() ||
-             self.texture_1 == other.texture_1)
+             self.texture_1 == other.texture_1) &&
+            (self.texture_2.is_invalid() || other.texture_2.is_invalid() ||
+             self.texture_2 == other.texture_2)
     }
 }
 
@@ -964,6 +994,7 @@ pub enum PrimitiveBatchData {
     Rectangles(Vec<PrimitiveInstance>),
     TextRun(Vec<PrimitiveInstance>),
     Image(Vec<PrimitiveInstance>),
+    YuvImage(Vec<PrimitiveInstance>),
     Borders(Vec<PrimitiveInstance>),
     AlignedGradient(Vec<PrimitiveInstance>),
     AngleGradient(Vec<PrimitiveInstance>),
@@ -1050,6 +1081,7 @@ impl PrimitiveBatch {
             AlphaBatchKind::Rectangle => PrimitiveBatchData::Rectangles(Vec::new()),
             AlphaBatchKind::TextRun => PrimitiveBatchData::TextRun(Vec::new()),
             AlphaBatchKind::Image => PrimitiveBatchData::Image(Vec::new()),
+            AlphaBatchKind::YuvImage => PrimitiveBatchData::YuvImage(Vec::new()),
             AlphaBatchKind::Border => PrimitiveBatchData::Borders(Vec::new()),
             AlphaBatchKind::AlignedGradient => PrimitiveBatchData::AlignedGradient(Vec::new()),
             AlphaBatchKind::AngleGradient => PrimitiveBatchData::AngleGradient(Vec::new()),
@@ -1802,6 +1834,16 @@ impl FrameBuilder {
         self.add_primitive(&rect,
                            clip_region,
                            PrimitiveContainer::Image(prim_cpu, prim_gpu));
+    }
+
+    pub fn add_yuv_image(&mut self,
+                         rect: Rect<f32>,
+                         clip_region: &ClipRegion,
+                         stretch_size: &Size2D<f32>,
+                         tile_spacing: &Size2D<f32>,
+                         image_key: ImageKey,
+                         image_rendering: ImageRendering) {
+        // TODO(nical)
     }
 
     /// Compute the contribution (bounding rectangles, and resources) of layers and their
