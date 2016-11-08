@@ -1488,7 +1488,7 @@ impl Renderer {
                                         max_prim_items,
                                         &projection);
                 }
-                &PrimitiveBatchData::YuvImage(ref ubo_data) => {
+                &PrimitiveBatchData::YuvImage(ref _ubo_data) => {
                     //TODO(nical)
                     unimplemented!();
                 }

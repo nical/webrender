@@ -312,6 +312,13 @@ pub struct ImageDisplayItem {
     pub image_rendering: ImageRendering,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct YuvImageDisplayItem {
+    pub y_image_key: ImageKey,
+    pub u_image_key: ImageKey,
+    pub v_image_key: ImageKey,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub enum ImageFormat {
     Invalid,
@@ -437,6 +444,7 @@ pub enum SpecificDisplayItem {
     Rectangle(RectangleDisplayItem),
     Text(TextDisplayItem),
     Image(ImageDisplayItem),
+    YuvImage(YuvImageDisplayItem),
     WebGL(WebGLDisplayItem),
     Border(BorderDisplayItem),
     BoxShadow(BoxShadowDisplayItem),

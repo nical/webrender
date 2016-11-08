@@ -595,6 +595,13 @@ impl Frame {
                                                   info.image_key,
                                                   info.image_rendering);
                             }
+                            SpecificDisplayItem::YuvImage(ref info) => {
+                                builder.add_yuv_image(item.rect,
+                                                      &item.clip,
+                                                      info.y_image_key,
+                                                      info.u_image_key,
+                                                      info.v_image_key);
+                            }
                             SpecificDisplayItem::Text(ref text_info) => {
                                 builder.add_text(item.rect,
                                                  &item.clip,

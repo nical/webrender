@@ -14,7 +14,7 @@ use internal_types::{ANGLE_FLOAT_TO_FIXED, LowLevelFilterOp};
 use layer::Layer;
 use prim_store::{PrimitiveGeometry, RectanglePrimitive, PrimitiveContainer};
 use prim_store::{BorderPrimitiveCpu, BorderPrimitiveGpu, BoxShadowPrimitiveGpu};
-use prim_store::{ImagePrimitiveCpu, ImagePrimitiveGpu, ImagePrimitiveKind};
+use prim_store::{ImagePrimitiveCpu, ImagePrimitiveGpu, YuvImagePrimitiveCpu, YuvImagePrimitiveGpu, ImagePrimitiveKind};
 use prim_store::{PrimitiveKind, PrimitiveIndex, PrimitiveMetadata, PrimitiveCacheInfo};
 use prim_store::PrimitiveClipSource;
 use prim_store::{GradientPrimitiveCpu, GradientPrimitiveGpu, GradientType};
@@ -187,8 +187,15 @@ impl AlphaBatchHelpers for PrimitiveStore {
                 });
             }
             &mut PrimitiveBatchData::YuvImage(ref mut data) => {
-                // TODO[nical]
-                unimplemented!();
+                data.push(PrimitiveInstance {
+                    task_id: task_id,
+                    layer_index: layer_index,
+                    global_prim_id: global_prim_id,
+                    prim_address: prim_address,
+                    clip_address: clip_address,
+                    sub_index: 0,
+                    user_data: [ 0, 0 ],
+                });
             }
             &mut PrimitiveBatchData::Borders(ref mut data) => {
                 for border_segment in 0..8 {
@@ -1839,11 +1846,32 @@ impl FrameBuilder {
     pub fn add_yuv_image(&mut self,
                          rect: Rect<f32>,
                          clip_region: &ClipRegion,
-                         stretch_size: &Size2D<f32>,
-                         tile_spacing: &Size2D<f32>,
-                         image_key: ImageKey,
-                         image_rendering: ImageRendering) {
-        // TODO(nical)
+                         y_image_key: ImageKey,
+                         u_image_key: ImageKey,
+                         v_image_key: ImageKey) {
+
+        let prim_cpu = YuvImagePrimitiveCpu {
+            y_key: y_image_key,
+            u_key: u_image_key,
+            v_key: v_image_key,
+            y_texture_id: TextureId::invalid(),
+            u_texture_id: TextureId::invalid(),
+            v_texture_id: TextureId::invalid(),
+        };
+
+        let prim_gpu = YuvImagePrimitiveGpu {
+            y_uv0: Point2D::zero(),
+            y_uv1: Point2D::zero(),
+            u_uv0: Point2D::zero(),
+            u_uv1: Point2D::zero(),
+            v_uv0: Point2D::zero(),
+            v_uv1: Point2D::zero(),
+            padding: [0.0; 4],
+        };
+
+        self.add_primitive(&rect,
+                           clip_region,
+                           PrimitiveContainer::YuvImage(prim_cpu, prim_gpu));
     }
 
     /// Compute the contribution (bounding rectangles, and resources) of layers and their

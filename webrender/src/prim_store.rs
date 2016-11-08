@@ -98,7 +98,9 @@ pub struct ImagePrimitiveCpu {
 
 #[derive(Debug)]
 pub struct YuvImagePrimitiveCpu {
-    pub key: ImageKey,
+    pub y_key: ImageKey,
+    pub u_key: ImageKey,
+    pub v_key: ImageKey,
     pub y_texture_id: TextureId,
     pub u_texture_id: TextureId,
     pub v_texture_id: TextureId,
@@ -110,6 +112,17 @@ pub struct ImagePrimitiveGpu {
     pub uv1: Point2D<f32>,
     pub stretch_size: Size2D<f32>,
     pub tile_spacing: Size2D<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct YuvImagePrimitiveGpu {
+    pub y_uv0: Point2D<f32>,
+    pub y_uv1: Point2D<f32>,
+    pub u_uv0: Point2D<f32>,
+    pub u_uv1: Point2D<f32>,
+    pub v_uv0: Point2D<f32>,
+    pub v_uv1: Point2D<f32>,
+    pub padding: [f32; 4]
 }
 
 #[derive(Debug, Clone)]
@@ -336,6 +349,7 @@ pub enum PrimitiveContainer {
     Rectangle(RectanglePrimitive),
     TextRun(TextRunPrimitiveCpu, TextRunPrimitiveGpu),
     Image(ImagePrimitiveCpu, ImagePrimitiveGpu),
+    YuvImage(YuvImagePrimitiveCpu, YuvImagePrimitiveGpu),
     Border(BorderPrimitiveCpu, BorderPrimitiveGpu),
     Gradient(GradientPrimitiveCpu, GradientPrimitiveGpu),
     BoxShadow(BoxShadowPrimitiveGpu, Vec<Rect<f32>>),
@@ -468,6 +482,25 @@ impl PrimitiveStore {
                 };
 
                 self.cpu_images.push(image_cpu);
+                metadata
+            }
+            PrimitiveContainer::YuvImage(image_cpu, image_gpu) => {
+                let gpu_address = self.gpu_data64.push(image_gpu);
+
+                let metadata = PrimitiveMetadata {
+                    is_opaque: true,
+                    mask_texture_id: TextureId::invalid(),
+                    clip_index: None,
+                    clip_source: clip_source,
+                    prim_kind: PrimitiveKind::YuvImage,
+                    cpu_prim_index: SpecificPrimitiveIndex(self.cpu_yuv_images.len()),
+                    gpu_prim_index: gpu_address,
+                    gpu_data_address: GpuStoreAddress(0),
+                    gpu_data_count: 0,
+                    cache_info: None,
+                };
+
+                self.cpu_yuv_images.push(image_cpu);
                 metadata
             }
             PrimitiveContainer::Border(border_cpu, border_gpu) => {
@@ -625,8 +658,27 @@ impl PrimitiveStore {
                     image_gpu.uv1 = cache_item.uv1;
                 }
                 PrimitiveKind::YuvImage => {
-                    // TODO(nical)
-                    unimplemented!();
+                    let image_cpu = &mut self.cpu_yuv_images[metadata.cpu_prim_index.0];
+                    let image_gpu: &mut YuvImagePrimitiveGpu = unsafe {
+                        mem::transmute(self.gpu_data64.get_mut(metadata.gpu_prim_index))
+                    };
+
+                    let y_cache_item = resource_cache.get_image(image_cpu.y_key, ImageRendering::Auto);
+                    let u_cache_item = resource_cache.get_image(image_cpu.u_key, ImageRendering::Auto);
+                    let v_cache_item = resource_cache.get_image(image_cpu.v_key, ImageRendering::Auto);
+
+                    image_cpu.y_texture_id = y_cache_item.texture_id;
+                    image_cpu.u_texture_id = u_cache_item.texture_id;
+                    image_cpu.v_texture_id = v_cache_item.texture_id;
+
+                    // TODO(nical): should the yuv shader assume each plane has its own set
+                    // of texture coordinates?
+                    image_gpu.y_uv0 = y_cache_item.uv0;
+                    image_gpu.y_uv1 = y_cache_item.uv1;
+                    image_gpu.u_uv0 = u_cache_item.uv0;
+                    image_gpu.u_uv1 = u_cache_item.uv1;
+                    image_gpu.v_uv0 = v_cache_item.uv0;
+                    image_gpu.v_uv1 = v_cache_item.uv1;
                 }
             }
         }
@@ -826,7 +878,9 @@ impl PrimitiveStore {
                 let image_cpu = &mut self.cpu_yuv_images[metadata.cpu_prim_index.0];
                 prim_needs_resolve = true;
 
-                resource_cache.request_image(image_cpu.key, ImageRendering::Auto);
+                resource_cache.request_image(image_cpu.y_key, ImageRendering::Auto);
+                resource_cache.request_image(image_cpu.u_key, ImageRendering::Auto);
+                resource_cache.request_image(image_cpu.v_key, ImageRendering::Auto);
 
                 // TODO(nical): Currently assuming no tile_spacing for yuv images.
                 metadata.is_opaque = true;
@@ -949,6 +1003,14 @@ impl From<ImagePrimitiveGpu> for GpuBlock32 {
     fn from(data: ImagePrimitiveGpu) -> GpuBlock32 {
         unsafe {
             mem::transmute::<ImagePrimitiveGpu, GpuBlock32>(data)
+        }
+    }
+}
+
+impl From<YuvImagePrimitiveGpu> for GpuBlock64 {
+    fn from(data: YuvImagePrimitiveGpu) -> GpuBlock64 {
+        unsafe {
+            mem::transmute::<YuvImagePrimitiveGpu, GpuBlock64>(data)
         }
     }
 }
