@@ -476,13 +476,12 @@ impl ResourceCache {
                             let image_id = entry.get().texture_cache_id;
 
                             if entry.get().epoch != image_template.epoch {
-                                // TODO: Can we avoid the clone of the bytes here?
                                 self.texture_cache.update(image_id,
                                                           image_template.width,
                                                           image_template.height,
                                                           image_template.stride,
                                                           image_template.format,
-                                                          image_template.bytes.clone());
+                                                          key);
 
                                 // Update the cached epoch
                                 *entry.into_mut() = CachedImageInfo {
@@ -499,14 +498,13 @@ impl ResourceCache {
                                 ImageRendering::Auto | ImageRendering::CrispEdges => TextureFilter::Linear,
                             };
 
-                            // TODO: Can we avoid the clone of the bytes here?
                             self.texture_cache.insert(image_id,
                                                       image_template.width,
                                                       image_template.height,
                                                       image_template.stride,
                                                       image_template.format,
                                                       filter,
-                                                      image_template.bytes.clone());
+                                                      key);
 
                             entry.insert(CachedImageInfo {
                                 texture_cache_id: image_id,

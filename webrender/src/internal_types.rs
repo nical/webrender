@@ -18,7 +18,7 @@ use std::i32;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tiling;
-use webrender_traits::{Epoch, ColorF, PipelineId};
+use webrender_traits::{Epoch, ColorF, PipelineId, ImageKey, CpuImage};
 use webrender_traits::{ImageFormat, MixBlendMode, NativeFontHandle};
 use webrender_traits::{ScrollLayerId, WebGLCommand};
 
@@ -335,7 +335,10 @@ pub enum RenderTargetMode {
 #[derive(Debug)]
 pub enum TextureUpdateDetails {
     Raw,
-    Blit(Vec<u8>, Option<u32>),
+    BlitImage(ImageKey, Option<u32>),
+    BlitImageInflated(ImageKey, Option<u32>),
+    BlitBytes(Vec<u8>, Option<u32>),
+    BlitBytesInflated(Vec<u8>, Option<u32>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -346,8 +349,8 @@ pub struct TextureImage {
 }
 
 pub enum TextureUpdateOp {
-    Create(u32, u32, ImageFormat, TextureFilter, RenderTargetMode, Option<Vec<u8>>),
-    Update(u32, u32, u32, u32, TextureUpdateDetails),
+    Create(u32, u32, ImageFormat, TextureFilter, RenderTargetMode, Option<ImageKey>),
+    Update(Rect<u32>, TextureUpdateDetails),
     Grow(u32, u32, ImageFormat, TextureFilter, RenderTargetMode),
     Remove
 }
@@ -372,6 +375,12 @@ impl TextureUpdateList {
     pub fn push(&mut self, update: TextureUpdate) {
         self.updates.push(update);
     }
+}
+
+pub enum ImageUpdate {
+    Create(ImageKey, CpuImage),
+    Update(ImageKey, CpuImage),
+    Remove(ImageKey)
 }
 
 /// Mostly wraps a tiling::Frame, adding a bit of extra information.
@@ -400,6 +409,7 @@ impl RendererFrame {
 }
 
 pub enum ResultMsg {
+    UpdateCpuImages(Vec<ImageUpdate>),
     UpdateTextureCache(TextureUpdateList),
     RefreshShader(PathBuf),
     NewFrame(RendererFrame, BackendProfileCounters),

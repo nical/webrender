@@ -324,6 +324,31 @@ pub enum ImageRendering {
     Pixelated,
 }
 
+pub struct RgbDescriptor {
+    pub format: ImageFormat,
+    pub size: Size2D<u32>, // TODO: use units!
+    pub stride: u32,
+}
+
+pub struct YuvDescriptor {
+    pub y_size: Size2D<u32>, // TODO: use units!
+    pub uv_size: Size2D<u32>,
+    pub u_offset: u32,
+    pub v_offset: u32,
+    pub y_stride: u32,
+    pub uv_stride: u32,
+}
+
+pub enum ImageDescriptor {
+    Rgb(RgbDescriptor),
+    Yuv(YuvDescriptor),
+}
+
+pub struct CpuImage {
+    pub descritptor: ImageDescriptor,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ItemRange {
     pub start: usize,

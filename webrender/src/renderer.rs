@@ -13,9 +13,9 @@ use debug_colors;
 use debug_render::DebugRenderer;
 use device::{Device, ProgramId, TextureId, VertexFormat, GpuProfiler};
 use device::{TextureFilter, VAOId, VertexUsageHint, FileWatcherHandler, TextureTarget};
-use euclid::{Matrix4D, Size2D};
+use euclid::{Matrix4D, Size2D, Rect};
 use fnv::FnvHasher;
-use internal_types::{RendererFrame, ResultMsg, TextureUpdateOp};
+use internal_types::{RendererFrame, ResultMsg, TextureUpdateOp, ImageUpdate};
 use internal_types::{TextureUpdateDetails, TextureUpdateList, PackedVertex, RenderTargetMode};
 use internal_types::{ORTHO_NEAR_PLANE, ORTHO_FAR_PLANE, DevicePoint};
 use internal_types::{BatchTextures, TextureSampler, GLContextHandleWrapper};
@@ -39,7 +39,7 @@ use tiling::{RenderTarget, ClearTile};
 use time::precise_time_ns;
 use util::TransformedRectKind;
 use webrender_traits::{ColorF, Epoch, PipelineId, RenderNotifier, RenderDispatcher};
-use webrender_traits::{ImageFormat, RenderApiSender, RendererKind};
+use webrender_traits::{ImageFormat, RenderApiSender, RendererKind, ImageKey, CpuImage};
 
 pub const MAX_VERTEX_TEXTURE_WIDTH: usize = 1024;
 
@@ -306,6 +306,8 @@ pub struct Renderer {
     result_rx: Receiver<ResultMsg>,
     device: Device,
     pending_texture_updates: Vec<TextureUpdateList>,
+    cpu_images: HashMap<ImageKey, CpuImage, BuildHasherDefault<FnvHasher>>,
+
     pending_shader_updates: Vec<PathBuf>,
     current_frame: Option<RendererFrame>,
     device_pixel_ratio: f32,
@@ -655,6 +657,7 @@ impl Renderer {
             current_frame: None,
             pending_texture_updates: Vec::new(),
             pending_shader_updates: Vec::new(),
+            cpu_images: HashMap::with_hasher(Default::default()),
             device_pixel_ratio: options.device_pixel_ratio,
             tile_clear_shader: tile_clear_shader,
             cs_box_shadow: cs_box_shadow,
@@ -733,6 +736,21 @@ impl Renderer {
         // Pull any pending results and return the most recent.
         while let Ok(msg) = self.result_rx.try_recv() {
             match msg {
+                ResultMsg::UpdateCpuImages(update_list) => {
+                    for item in update_list {
+                        match item {
+                            ImageUpdate::Create(key, img) => {
+                                self.cpu_images.insert(key, img);
+                            }
+                            ImageUpdate::Update(key, img) => {
+                                *self.cpu_images.get_mut(&key).unwrap() = img;
+                            }
+                            ImageUpdate::Remove(key) => {
+                                self.cpu_images.remove(&key);
+                            }
+                        }
+                    }
+                }
                 ResultMsg::UpdateTextureCache(update_list) => {
                     self.pending_texture_updates.push(update_list);
                 }
@@ -840,28 +858,17 @@ impl Renderer {
         for update_list in pending_texture_updates.drain(..) {
             for update in update_list.updates {
                 match update.op {
-                    TextureUpdateOp::Create(width, height, format, filter, mode, maybe_bytes) => {
-                        // TODO: clean up match
-                        match maybe_bytes {
-                            Some(bytes) => {
-                                self.device.init_texture(update.id,
-                                                         width,
-                                                         height,
-                                                         format,
-                                                         filter,
-                                                         mode,
-                                                         Some(bytes.as_slice()));
-                            }
-                            None => {
-                                self.device.init_texture(update.id,
-                                                         width,
-                                                         height,
-                                                         format,
-                                                         filter,
-                                                         mode,
-                                                         None);
-                            }
-                        }
+                    TextureUpdateOp::Create(width, height, format, filter, mode, maybe_image_key) => {
+                        let maybe_bytes = maybe_image_key.as_ref().map(|key|{
+                            &self.cpu_images.get(key).unwrap().bytes[..]
+                        });
+                        self.device.init_texture(update.id,
+                                                 width,
+                                                 height,
+                                                 format,
+                                                 filter,
+                                                 mode,
+                                                 maybe_bytes);
                     }
                     TextureUpdateOp::Grow(new_width,
                                           new_height,
@@ -875,18 +882,24 @@ impl Renderer {
                                                    filter,
                                                    mode);
                     }
-                    TextureUpdateOp::Update(x, y, width, height, details) => {
+                    TextureUpdateOp::Update(dest_rect, details) => {
                         match details {
                             TextureUpdateDetails::Raw => {
-                                self.device.update_raw_texture(update.id, x, y, width, height);
+                                self.device.update_raw_texture(update.id,
+                                                               dest_rect.x,
+                                                               dest_rect.y,
+                                                               dest_rect.width,
+                                                               dest_rect.height);
                             }
-                            TextureUpdateDetails::Blit(bytes, stride) => {
-                                self.device.update_texture(
-                                    update.id,
-                                    x,
-                                    y,
-                                    width, height, stride,
-                                    bytes.as_slice());
+                            TextureUpdateDetails::Blit(image_key, stride) => {
+                                self.upload_image(update.id, image_key,
+                                                  dest_rect, stride,
+                                                  false);
+                            }
+                            TextureUpdateDetails::BlitInflated(image_key, stride) => {
+                                self.upload_image(update.id, image_key,
+                                                  dest_rect, stride,
+                                                  true);
                             }
                         }
                     }
@@ -896,6 +909,72 @@ impl Renderer {
                 }
             }
         }
+    }
+
+    fn upload_image(&mut self, id: TextureId, image_key: ImageKey, dest_rect: Rect<u32>, stride: Option<u32>, inflate: bool) {
+        let image = self.cpu_images.get(&image_key).unwrap();
+
+        if inflate {
+            let bpp = match image.format {
+                ImageFormat::A8 => 1,
+                ImageFormat::RGB8 => 3,
+                ImageFormat::RGBA8 => 4,
+                ImageFormat::Invalid | ImageFormat::RGBAF32 => unreachable!(),
+            };
+
+            let width = dest_rect.size.width;
+            let height = dest_rect.size.height;
+            let column_size = (height * bpp) as usize;
+            let row_size = ((width+2) * bpp) as usize;
+            let mut top_row_bytes = Vec::with_capacity(row_size);
+            let mut bottom_row_bytes = Vec::with_capacity(row_size);
+            let mut left_column_bytes = Vec::with_capacity(column_size);
+            let mut right_column_bytes = Vec::with_capacity(column_size);
+
+            // TODO: we don't actually need to copy the top and bottom rows.
+            copy_pixels(&image.bytes[..], &mut top_row_bytes, 0, 0, 1, width, stride, bpp);
+            copy_pixels(&image.bytes[..], &mut top_row_bytes, 0, 0, width, width, stride, bpp);
+            copy_pixels(&image.bytes[..], &mut top_row_bytes, width-1, 0, 1, width, stride, bpp);
+
+            copy_pixels(&image.bytes[..], &mut bottom_row_bytes, 0, height-1, 1, width, stride, bpp);
+            copy_pixels(&image.bytes[..], &mut bottom_row_bytes, 0, height-1, width, width, stride, bpp);
+            copy_pixels(&image.bytes[..], &mut bottom_row_bytes, width-1, height-1, 1, width, stride, bpp);
+
+            for y in 0..height {
+                copy_pixels(&image.bytes[..], &mut left_column_bytes, 0, y, 1, width, stride, bpp);
+                copy_pixels(&image.bytes[..], &mut right_column_bytes, width-1, y, 1, width, stride, bpp);
+            }
+
+            self.device.update_texture(id,
+                                       dest_rect.origin.x, dest_rect.origin.y,
+                                       dest_rect.size.width, 1,
+                                       None,
+                                       &top_row_bytes[..]);
+
+            self.device.update_texture(id,
+                                       dest_rect.origin.x, dest_rect.max_y() + 1,
+                                       dest_rect.size.width, 1,
+                                       None,
+                                       &bottom_row_bytes[..]);
+
+            self.device.update_texture(id,
+                                       dest_rect.origin.x, dest_rect.origin.y,
+                                       1, dest_rect.size.height,
+                                       None,
+                                       &left_column_bytes[..]);
+
+            self.device.update_texture(id,
+                                       dest_rect.max_x() + 1, dest_rect.origin.y,
+                                       1, dest_rect.size.height,
+                                       None,
+                                       &right_column_bytes[..]);
+        }
+
+        self.device.update_texture(id,
+                                   dest_rect.origin.x, dest_rect.origin.y,
+                                   dest_rect.size.width, dest_rect.size.height,
+                                   stride,
+                                   &image.bytes[..]);
     }
 
     fn add_debug_rect(&mut self,
@@ -1374,4 +1453,24 @@ pub struct RendererOptions {
     pub precache_shaders: bool,
     pub renderer_kind: RendererKind,
     pub enable_subpixel_aa: bool,
+}
+
+#[inline]
+fn copy_pixels(src: &[u8],
+               target: &mut Vec<u8>,
+               x: u32,
+               y: u32,
+               count: u32,
+               width: u32,
+               stride: Option<u32>,
+               bpp: u32) {
+    let row_length = match stride {
+      Some(value) => value / bpp,
+      None => width,
+    };
+
+    let pixel_index = (y * row_length + x) * bpp;
+    for byte in src.iter().skip(pixel_index as usize).take((count * bpp) as usize) {
+        target.push(*byte);
+    }
 }

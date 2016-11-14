@@ -17,7 +17,7 @@ use std::mem;
 use std::slice::Iter;
 use time;
 use util;
-use webrender_traits::ImageFormat;
+use webrender_traits::{ImageFormat, ImageKey};
 
 /// The number of bytes we're allowed to use for a texture.
 const MAX_BYTES_PER_TEXTURE: u32 = 1024 * 1024 * 256;  // 256MB
@@ -51,26 +51,6 @@ const COALESCING_TIMEOUT: u64 = 100;
 const COALESCING_TIMEOUT_CHECKING_INTERVAL: usize = 256;
 
 pub type TextureCacheItemId = FreeListItemId;
-
-#[inline]
-fn copy_pixels(src: &[u8],
-               target: &mut Vec<u8>,
-               x: u32,
-               y: u32,
-               count: u32,
-               width: u32,
-               stride: Option<u32>,
-               bpp: u32) {
-    let row_length = match stride {
-      Some(value) => value / bpp,
-      None => width,
-    };
-
-    let pixel_index = (y * row_length + x) * bpp;
-    for byte in src.iter().skip(pixel_index as usize).take((count * bpp) as usize) {
-        target.push(*byte);
-    }
-}
 
 /// A texture allocator using the guillotine algorithm with the rectangle merge improvement. See
 /// sections 2.2 and 2.2.5 in "A Thousand Ways to Pack the Bin - A Practical Approach to Two-
@@ -720,7 +700,7 @@ impl TextureCache {
                   height: u32,
                   stride: Option<u32>,
                   _format: ImageFormat,
-                  bytes: Vec<u8>) {
+                  image_key: ImageKey) {
         let existing_item = self.items.get(image_id);
 
         // TODO(gw): Handle updates to size/format!
@@ -731,7 +711,7 @@ impl TextureCache {
                                          existing_item.requested_rect.origin.y,
                                          width,
                                          height,
-                                         TextureUpdateDetails::Blit(bytes, stride));
+                                         TextureUpdateDetails::Blit(image_key, stride));
 
         let update_op = TextureUpdate {
             id: existing_item.texture_id,
@@ -741,14 +721,14 @@ impl TextureCache {
         self.pending_updates.push(update_op);
     }
 
-    pub fn insert(&mut self,
-                  image_id: TextureCacheItemId,
-                  width: u32,
-                  height: u32,
-                  stride: Option<u32>,
-                  format: ImageFormat,
-                  filter: TextureFilter,
-                  bytes: Vec<u8>) {
+    pub fn insert_image(&mut self,
+                        image_id: TextureCacheItemId,
+                        width: u32,
+                        height: u32,
+                        stride: Option<u32>,
+                        format: ImageFormat,
+                        filter: TextureFilter,
+                        image_key: ImageKey) {
         let result = self.allocate(image_id,
                                    width,
                                    height,
@@ -757,80 +737,45 @@ impl TextureCache {
 
         let op = match result.kind {
             AllocationKind::TexturePage => {
-                let bpp = match format {
-                    ImageFormat::A8 => 1,
-                    ImageFormat::RGB8 => 3,
-                    ImageFormat::RGBA8 => 4,
-                    ImageFormat::Invalid | ImageFormat::RGBAF32 => unreachable!(),
-                };
-
-                let mut top_row_bytes = Vec::new();
-                let mut bottom_row_bytes = Vec::new();
-                let mut left_column_bytes = Vec::new();
-                let mut right_column_bytes = Vec::new();
-
-                copy_pixels(&bytes, &mut top_row_bytes, 0, 0, 1, width, stride, bpp);
-                copy_pixels(&bytes, &mut top_row_bytes, 0, 0, width, width, stride, bpp);
-                copy_pixels(&bytes, &mut top_row_bytes, width-1, 0, 1, width, stride, bpp);
-
-                copy_pixels(&bytes, &mut bottom_row_bytes, 0, height-1, 1, width, stride, bpp);
-                copy_pixels(&bytes, &mut bottom_row_bytes, 0, height-1, width, width, stride, bpp);
-                copy_pixels(&bytes, &mut bottom_row_bytes, width-1, height-1, 1, width, stride, bpp);
-
-                for y in 0..height {
-                    copy_pixels(&bytes, &mut left_column_bytes, 0, y, 1, width, stride, bpp);
-                    copy_pixels(&bytes, &mut right_column_bytes, width-1, y, 1, width, stride, bpp);
-                }
-
-                let border_update_op_top = TextureUpdate {
-                    id: result.item.texture_id,
-                    op: TextureUpdateOp::Update(result.item.allocated_rect.origin.x,
-                                                result.item.allocated_rect.origin.y,
-                                                result.item.allocated_rect.size.width,
-                                                1,
-                                                TextureUpdateDetails::Blit(top_row_bytes, None))
-                };
-
-                let border_update_op_bottom = TextureUpdate {
-                    id: result.item.texture_id,
-                    op: TextureUpdateOp::Update(
-                        result.item.allocated_rect.origin.x,
-                        result.item.allocated_rect.origin.y +
-                            result.item.requested_rect.size.height + 1,
-                        result.item.allocated_rect.size.width,
-                        1,
-                        TextureUpdateDetails::Blit(bottom_row_bytes, None))
-                };
-
-                let border_update_op_left = TextureUpdate {
-                    id: result.item.texture_id,
-                    op: TextureUpdateOp::Update(
-                        result.item.allocated_rect.origin.x,
-                        result.item.requested_rect.origin.y,
-                        1,
-                        result.item.requested_rect.size.height,
-                        TextureUpdateDetails::Blit(left_column_bytes, None))
-                };
-
-                let border_update_op_right = TextureUpdate {
-                    id: result.item.texture_id,
-                    op: TextureUpdateOp::Update(result.item.allocated_rect.origin.x + result.item.requested_rect.size.width + 1,
-                                                result.item.requested_rect.origin.y,
-                                                1,
-                                                result.item.requested_rect.size.height,
-                                                TextureUpdateDetails::Blit(right_column_bytes, None))
-                };
-
-                self.pending_updates.push(border_update_op_top);
-                self.pending_updates.push(border_update_op_bottom);
-                self.pending_updates.push(border_update_op_left);
-                self.pending_updates.push(border_update_op_right);
-
-                TextureUpdateOp::Update(result.item.requested_rect.origin.x,
-                                        result.item.requested_rect.origin.y,
-                                        width,
+                TextureUpdateOp::Update(result.item.requested_rect,
+                                        TextureUpdateDetails::BlitInflated(image_key, stride))
+            }
+            AllocationKind::Standalone => {
+                TextureUpdateOp::Create(width,
                                         height,
-                                        TextureUpdateDetails::Blit(bytes,stride))
+                                        format,
+                                        filter,
+                                        RenderTargetMode::None,
+                                        Some(image_key))
+            }
+        };
+
+        let update_op = TextureUpdate {
+            id: result.item.texture_id,
+            op: op,
+        };
+
+        self.pending_updates.push(update_op);
+    }
+
+    pub fn insert_bytes(&mut self,
+                        image_id: TextureCacheItemId,
+                        width: u32,
+                        height: u32,
+                        stride: Option<u32>,
+                        format: ImageFormat,
+                        filter: TextureFilter,
+                        bytes: Vec<u8>) {
+        let result = self.allocate(image_id,
+                                   width,
+                                   height,
+                                   format,
+                                   filter);
+
+        let op = match result.kind {
+            AllocationKind::TexturePage => {
+                TextureUpdateOp::Update(result.item.requested_rect,
+                                        TextureUpdateDetails::BlitBytesInflated(bytes, stride))
             }
             AllocationKind::Standalone => {
                 TextureUpdateOp::Create(width,
