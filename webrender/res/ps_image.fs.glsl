@@ -20,11 +20,18 @@ void main(void) {
 
     alpha = min(alpha, do_clip());
 
+    vec2 half_texel = vec2(0.5) / vec2(textureSize(sColor0, 0));
     // We calculate the particular tile this fragment belongs to, taking into
     // account the spacing in between tiles. We only paint if our fragment does
     // not fall into that spacing.
     vec2 position_in_tile = mod(relative_pos_in_rect, vStretchSize + vTileSpacing);
-    vec2 st = vTextureOffset + ((position_in_tile / vStretchSize) * vTextureSize);
+    // Clamp the texture coordinates half a texel within the original uv rect
+    // in order to prevent bleeding artifacts when the image is stretched.
+    vec2 st = vTextureOffset + clamp(
+        (position_in_tile / vStretchSize) * vTextureSize,
+        half_texel,
+        vTextureSize - half_texel
+    );
     alpha = alpha * float(all(bvec2(step(position_in_tile, vStretchSize))));
 
     oFragColor = vec4(1.0, 1.0, 1.0, alpha) * texture(sColor0, st);

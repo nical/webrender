@@ -767,6 +767,8 @@ impl TextureCache {
 
         let op = match result.kind {
             AllocationKind::TexturePage => {
+                // TODO(nical): remove this completely
+                /*
                 let bpp = match format {
                     ImageFormat::A8 => 1,
                     ImageFormat::RGB8 => 3,
@@ -839,7 +841,7 @@ impl TextureCache {
                 self.pending_updates.push(border_update_op_bottom);
                 self.pending_updates.push(border_update_op_left);
                 self.pending_updates.push(border_update_op_right);
-
+                */
                 TextureUpdateOp::Update(result.item.requested_rect.origin.x,
                                         result.item.requested_rect.origin.y,
                                         width,
