@@ -71,6 +71,7 @@ mod spring;
 mod texture_cache;
 mod tiling;
 mod util;
+mod virtual_texture;
 
 mod shader_source {
     include!(concat!(env!("OUT_DIR"), "/shaders.rs"));
