@@ -18,9 +18,10 @@ use std::{i32, usize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tiling;
-use webrender_traits::{Epoch, ColorF, PipelineId, DeviceIntSize};
+use webrender_traits::{Epoch, ColorF, PipelineId};
 use webrender_traits::{ImageFormat, MixBlendMode, NativeFontHandle};
 use webrender_traits::{ExternalImageId, ScrollLayerId, WebGLCommand};
+use webrender_traits::{DeviceUintSize, DeviceUintRect, DeviceIntSize};
 
 // An ID for a texture that is owned by the
 // texture cache module. This can include atlases
@@ -342,9 +343,9 @@ pub enum RenderTargetMode {
 }
 
 pub enum TextureUpdateOp {
-    Create(u32, u32, ImageFormat, TextureFilter, RenderTargetMode, Option<Arc<Vec<u8>>>),
-    Update(u32, u32, u32, u32, Arc<Vec<u8>>, Option<u32>),
-    Grow(u32, u32, ImageFormat, TextureFilter, RenderTargetMode),
+    Create(DeviceUintSize, ImageFormat, TextureFilter, RenderTargetMode, Option<Arc<Vec<u8>>>),
+    Update(DeviceUintRect, Arc<Vec<u8>>, Option<u32>),
+    Grow(DeviceUintSize, ImageFormat, TextureFilter, RenderTargetMode),
 }
 
 pub struct TextureUpdate {

@@ -847,7 +847,7 @@ impl Renderer {
         for update_list in pending_texture_updates.drain(..) {
             for update in update_list.updates {
                 match update.op {
-                    TextureUpdateOp::Create(width, height, format, filter, mode, maybe_bytes) => {
+                    TextureUpdateOp::Create(size, format, filter, mode, maybe_bytes) => {
                         // Create a new native texture, as requested by the texture cache.
                         let texture_id = self.device
                                              .create_texture_ids(1, TextureTarget::Default)[0];
@@ -865,32 +865,31 @@ impl Renderer {
 
                         let maybe_slice = maybe_bytes.as_ref().map(|bytes|{ bytes.as_slice() });
                         self.device.init_texture(texture_id,
-                                                 width,
-                                                 height,
+                                                 size.width,
+                                                 size.height,
                                                  format,
                                                  filter,
                                                  mode,
                                                  maybe_slice);
                     }
-                    TextureUpdateOp::Grow(new_width,
-                                          new_height,
+                    TextureUpdateOp::Grow(new_size,
                                           format,
                                           filter,
                                           mode) => {
                         let texture_id = self.cache_texture_id_map[update.id.0].unwrap();
                         self.device.resize_texture(texture_id,
-                                                   new_width,
-                                                   new_height,
+                                                   new_size.width,
+                                                   new_size.height,
                                                    format,
                                                    filter,
                                                    mode);
                     }
-                    TextureUpdateOp::Update(x, y, width, height, bytes, stride) => {
+                    TextureUpdateOp::Update(rect, bytes, stride) => {
                         let texture_id = self.cache_texture_id_map[update.id.0].unwrap();
                         self.device.update_texture(texture_id,
-                                                   x,
-                                                   y,
-                                                   width, height, stride,
+                                                   rect.origin.x,
+                                                   rect.origin.y,
+                                                   rect.size.width, rect.size.height, stride,
                                                    bytes.as_slice());
                     }
                 }

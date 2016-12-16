@@ -32,6 +32,16 @@ pub type DeviceRect = TypedRect<f32, DevicePixel>;
 pub type DevicePoint = TypedPoint2D<f32, DevicePixel>;
 pub type DeviceSize = TypedSize2D<f32, DevicePixel>;
 
+#[inline]
+pub fn device_int_rect(x: i32, y: i32, w: i32, h: i32) -> DeviceIntRect {
+    DeviceIntRect::new(DeviceIntPoint::new(x, y), DeviceIntSize::new(w, h))
+}
+
+#[inline]
+pub fn device_uint_rect(x: u32, y: u32, w: u32, h: u32) -> DeviceUintRect {
+    DeviceUintRect::new(DeviceUintPoint::new(x, y), DeviceUintSize::new(w, h))
+}
+
 /// Geometry in a stacking context's local coordinate space (logical pixels).
 ///
 /// For now layout pixels are equivalent to layer pixels, but it may change.

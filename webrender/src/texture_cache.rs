@@ -18,6 +18,7 @@ use time;
 use util;
 use webrender_traits::{ImageFormat, DevicePixel, DeviceIntPoint};
 use webrender_traits::{DeviceUintRect, DeviceUintSize, DeviceUintPoint};
+use webrender_traits::{device_uint_rect};
 
 /// The number of bytes we're allowed to use for a texture.
 const MAX_BYTES_PER_TEXTURE: u32 = 1024 * 1024 * 256;  // 256MB
@@ -736,12 +737,14 @@ impl TextureCache {
         debug_assert!(existing_item.requested_rect.size.width == width);
         debug_assert!(existing_item.requested_rect.size.height == height);
 
-        let op = TextureUpdateOp::Update(existing_item.requested_rect.origin.x,
-                                         existing_item.requested_rect.origin.y,
-                                         width,
-                                         height,
-                                         bytes,
-                                         stride);
+        let op = TextureUpdateOp::Update(
+            device_uint_rect(
+                existing_item.requested_rect.origin.x,
+                existing_item.requested_rect.origin.y,
+                width,
+                height),
+            bytes,
+            stride);
 
         let update_op = TextureUpdate {
             id: existing_item.texture_id,
@@ -794,22 +797,24 @@ impl TextureCache {
 
                 let border_update_op_top = TextureUpdate {
                     id: result.item.texture_id,
-                    op: TextureUpdateOp::Update(result.item.allocated_rect.origin.x,
-                                                result.item.allocated_rect.origin.y,
-                                                result.item.allocated_rect.size.width,
-                                                1,
-                                                Arc::new(top_row_bytes),
-                                                None)
+                    op: TextureUpdateOp::Update(
+                        device_uint_rect(result.item.allocated_rect.origin.x,
+                                         result.item.allocated_rect.origin.y,
+                                         result.item.allocated_rect.size.width,
+                                         1),
+                        Arc::new(top_row_bytes),
+                        None)
                 };
 
                 let border_update_op_bottom = TextureUpdate {
                     id: result.item.texture_id,
                     op: TextureUpdateOp::Update(
-                        result.item.allocated_rect.origin.x,
-                        result.item.allocated_rect.origin.y +
-                            result.item.requested_rect.size.height + 1,
-                        result.item.allocated_rect.size.width,
-                        1,
+                        device_uint_rect(
+                            result.item.allocated_rect.origin.x,
+                            result.item.allocated_rect.origin.y +
+                                result.item.requested_rect.size.height + 1,
+                            result.item.allocated_rect.size.width,
+                            1),
                         Arc::new(bottom_row_bytes),
                         None)
                 };
@@ -817,22 +822,24 @@ impl TextureCache {
                 let border_update_op_left = TextureUpdate {
                     id: result.item.texture_id,
                     op: TextureUpdateOp::Update(
-                        result.item.allocated_rect.origin.x,
-                        result.item.requested_rect.origin.y,
-                        1,
-                        result.item.requested_rect.size.height,
+                        device_uint_rect(
+                            result.item.allocated_rect.origin.x,
+                            result.item.requested_rect.origin.y,
+                            1,
+                            result.item.requested_rect.size.height),
                         Arc::new(left_column_bytes),
                         None)
                 };
 
                 let border_update_op_right = TextureUpdate {
                     id: result.item.texture_id,
-                    op: TextureUpdateOp::Update(result.item.allocated_rect.origin.x + result.item.requested_rect.size.width + 1,
-                                                result.item.requested_rect.origin.y,
-                                                1,
-                                                result.item.requested_rect.size.height,
-                                                Arc::new(right_column_bytes),
-                                                None)
+                    op: TextureUpdateOp::Update(
+                        device_uint_rect(result.item.allocated_rect.origin.x + result.item.requested_rect.size.width + 1,
+                                         result.item.requested_rect.origin.y,
+                                         1,
+                                         result.item.requested_rect.size.height),
+                        Arc::new(right_column_bytes),
+                        None)
                 };
 
                 self.pending_updates.push(border_update_op_top);
@@ -840,16 +847,12 @@ impl TextureCache {
                 self.pending_updates.push(border_update_op_left);
                 self.pending_updates.push(border_update_op_right);
 
-                TextureUpdateOp::Update(result.item.requested_rect.origin.x,
-                                        result.item.requested_rect.origin.y,
-                                        width,
-                                        height,
+                TextureUpdateOp::Update(result.item.requested_rect,
                                         bytes,
                                         stride)
             }
             AllocationKind::Standalone => {
-                TextureUpdateOp::Create(width,
-                                        height,
+                TextureUpdateOp::Create(DeviceUintSize::new(width, height),
                                         format,
                                         filter,
                                         RenderTargetMode::None,
@@ -888,15 +891,14 @@ impl TextureCache {
 
 fn texture_create_op(texture_size: u32, format: ImageFormat, mode: RenderTargetMode)
                      -> TextureUpdateOp {
-    TextureUpdateOp::Create(texture_size, texture_size, format, TextureFilter::Linear, mode, None)
+    TextureUpdateOp::Create(DeviceUintSize::new(texture_size, texture_size), format, TextureFilter::Linear, mode, None)
 }
 
 fn texture_grow_op(texture_size: u32,
                    format: ImageFormat,
                    mode: RenderTargetMode)
                    -> TextureUpdateOp {
-    TextureUpdateOp::Grow(texture_size,
-                          texture_size,
+    TextureUpdateOp::Grow(DeviceUintSize::new(texture_size, texture_size),
                           format,
                           TextureFilter::Linear,
                           mode)
