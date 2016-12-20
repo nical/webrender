@@ -343,9 +343,30 @@ pub enum RenderTargetMode {
 }
 
 pub enum TextureUpdateOp {
-    Create(DeviceUintSize, ImageFormat, TextureFilter, RenderTargetMode, Option<Arc<Vec<u8>>>),
-    Update(DeviceUintRect, Arc<Vec<u8>>, Option<u32>),
-    Grow(DeviceUintSize, ImageFormat, TextureFilter, RenderTargetMode),
+    Create {
+        size: DeviceUintSize,
+        format: ImageFormat,
+        filter: TextureFilter,
+        mode: RenderTargetMode,
+        bytes: Option<Arc<Vec<u8>>>,
+    },
+    Update {
+        rect: DeviceUintRect,
+        bytes: Arc<Vec<u8>>,
+        stride: Option<u32>, // in bytes
+    },
+    SubUpdate {
+        dst_rect: DeviceUintRect,
+        src_offset: u32, // in bytes
+        src_stride: u32, // in bytes
+        bytes: Arc<Vec<u8>>,
+    },
+    Grow {
+        size: DeviceUintSize,
+        format: ImageFormat,
+        filter: TextureFilter,
+        mode: RenderTargetMode,
+    },
 }
 
 pub struct TextureUpdate {

@@ -1555,7 +1555,7 @@ impl Device {
             None => width,
         };
 
-        assert!(data.len() as u32 == bpp * row_length * height);
+        assert!(data.len() as u32 >= bpp * row_length * height);
 
         if let Some(..) = stride {
             gl::pixel_store_i(gl::UNPACK_ROW_LENGTH, row_length as gl::GLint);
