@@ -6,8 +6,8 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use channel::{self, MsgSender, PayloadHelperMethods, PayloadSender};
 use offscreen_gl_context::{GLContextAttributes, GLLimits};
 use std::cell::Cell;
-use {ApiMsg, ColorF, DisplayListBuilder, Epoch, ImageDescriptor};
-use {FontKey, IdNamespace, ImageKey, NativeFontHandle, PipelineId};
+use {ApiMsg, ColorF, DisplayListBuilder, Epoch, ImageDescriptor, ImageType};
+use {FontKey, IdNamespace, ImageKey, NativeFontHandle, PipelineId, VectorImageData};
 use {RenderApiSender, ResourceId, ScrollEventPhase, ScrollLayerState, ScrollLocation, ServoScrollRootId};
 use {GlyphKey, GlyphDimensions, ImageData, WebGLContextId, WebGLCommand};
 use {DeviceIntSize, DynamicProperties, LayoutPoint, LayoutSize, WorldPoint, PropertyBindingKey, PropertyBindingId};
@@ -107,6 +107,7 @@ impl RenderApi {
                         key: ImageKey,
                         descriptor: ImageDescriptor,
                         bytes: Vec<u8>) {
+        assert_eq!(key.image_type(), ImageType::Raster);
         let msg = ApiMsg::UpdateImage(key, descriptor, bytes);
         self.api_sender.send(msg).unwrap();
     }
@@ -115,6 +116,17 @@ impl RenderApi {
     pub fn delete_image(&self, key: ImageKey) {
         let msg = ApiMsg::DeleteImage(key);
         self.api_sender.send(msg).unwrap();
+    }
+
+    /// Adds a vector image and returns the corresponding `VectorImageKey`.
+    pub fn add_vector_image(&self,
+                            descriptor: ImageDescriptor,
+                            data: VectorImageData) -> ImageKey {
+        let new_id = self.next_unique_id();
+        let key = ImageKey::new_vector(new_id.0, new_id.1);
+        let msg = ApiMsg::AddVectorImage(key, descriptor, data);
+        self.api_sender.send(msg).unwrap();
+        key
     }
 
     /// Sets the root pipeline.

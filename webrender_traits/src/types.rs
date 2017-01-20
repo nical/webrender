@@ -36,6 +36,8 @@ pub enum ApiMsg {
     UpdateImage(ImageKey, ImageDescriptor, Vec<u8>),
     /// Drops an image from the resource cache.
     DeleteImage(ImageKey),
+    /// Adds a list of vector drawing commands.
+    AddVectorImage(ImageKey, ImageDescriptor, VectorImageData),
     CloneApi(MsgSender<IdNamespace>),
     /// Supplies a new frame to WebRender.
     ///
@@ -561,6 +563,14 @@ pub struct ImageDisplayItem {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct VectorImageDisplayItem {
+    pub image_key: ImageKey,
+    pub stretch_size: LayoutSize,
+    pub tile_spacing: LayoutSize,
+    pub image_rendering: ImageRendering,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub struct YuvImageDisplayItem {
     pub y_image_key: ImageKey,
     pub u_image_key: ImageKey,
@@ -622,9 +632,16 @@ impl ImageData {
     }
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub enum ImageType {
+    Raster,
+    Vector,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct ImageKey(pub u32, pub u32);
+pub struct ImageKey(pub u32, pub u32, ImageType);
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -688,6 +705,9 @@ pub struct RenderApiSender {
     api_sender: MsgSender<ApiMsg>,
     payload_sender: PayloadSender,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VectorImageData(Vec<u8>);
 
 pub trait RenderNotifier: Send {
     fn new_frame_ready(&mut self);
@@ -1120,6 +1140,7 @@ impl fmt::Debug for ApiMsg {
             &ApiMsg::VRCompositorCommand(..) => { write!(f, "ApiMsg::VRCompositorCommand") }
             &ApiMsg::ExternalEvent(..) => { write!(f, "ApiMsg::ExternalEvent") }
             &ApiMsg::ShutDown => { write!(f, "ApiMsg::ShutDown") }
+            &ApiMsg::AddVectorImage(..) => { write!(f, "ApiMsg::AddVectorImage") }
         }
     }
 }

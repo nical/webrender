@@ -15,7 +15,7 @@ use std::usize;
 use util::TransformedRect;
 use webrender_traits::{AuxiliaryLists, ColorF, ImageKey, ImageRendering, YuvColorSpace};
 use webrender_traits::{ClipRegion, ComplexClipRegion, ItemRange, GlyphKey};
-use webrender_traits::{FontKey, FontRenderMode, WebGLContextId};
+use webrender_traits::{FontKey, ImageType, FontRenderMode, WebGLContextId};
 use webrender_traits::{device_length, DeviceIntRect, DeviceIntSize};
 use webrender_traits::{DeviceRect, DevicePoint, DeviceSize};
 use webrender_traits::{LayerRect, LayerSize, LayerPoint};
@@ -889,6 +889,9 @@ impl PrimitiveStore {
 
                     let (texture_id, cache_item) = match image_cpu.kind {
                         ImagePrimitiveKind::Image(image_key, image_rendering, _) => {
+                            if image_key.is_vector() {
+                                unimplemented!()
+                            }
                             // Check if an external image that needs to be resolved
                             // by the render thread.
                             let image_properties = resource_cache.get_image_properties(image_key);

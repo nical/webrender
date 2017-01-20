@@ -5,7 +5,7 @@
 use display_list::AuxiliaryListsBuilder;
 use {BorderRadius, BorderDisplayItem, ClipRegion, ColorF, ComplexClipRegion};
 use {FontKey, ImageKey, PipelineId, ScrollLayerId, ScrollLayerInfo, ServoScrollRootId};
-use {ImageMask, ItemRange};
+use {ImageMask, ItemRange, ImageType};
 use {LayoutSize, LayoutPoint, LayoutRect};
 
 impl BorderDisplayItem {
@@ -155,8 +155,16 @@ impl FontKey {
 
 impl ImageKey {
     pub fn new(key0: u32, key1: u32) -> ImageKey {
-        ImageKey(key0, key1)
+        ImageKey(key0, key1, ImageType::Raster)
     }
+
+    pub fn new_vector(key0: u32, key1: u32) -> ImageKey {
+        ImageKey(key0, key1, ImageType::Vector)
+    }
+
+    pub fn image_type(&self) -> ImageType { self.2 }
+
+    pub fn is_vector(&self) -> bool { self.2 == ImageType::Vector }
 }
 
 impl ScrollLayerId {

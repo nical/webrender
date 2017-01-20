@@ -21,6 +21,7 @@ use webrender_traits::{PipelineId, RenderNotifier, RenderDispatcher, WebGLComman
 use webrender_traits::channel::{PayloadHelperMethods, PayloadReceiver, PayloadSender, MsgReceiver};
 use webrender_traits::{VRCompositorCommand, VRCompositorHandler};
 use offscreen_gl_context::GLContextDispatcher;
+use renderer::VectorImageRenderer;
 
 /// The render backend is responsible for transforming high level display lists into
 /// GPU-friendly work which is then submitted to the renderer in the form of a frame::Frame.
@@ -61,6 +62,7 @@ impl RenderBackend {
                texture_cache: TextureCache,
                enable_aa: bool,
                notifier: Arc<Mutex<Option<Box<RenderNotifier>>>>,
+               vector_image_renderer: Option<Box<VectorImageRenderer>>,
                webrender_context_handle: Option<GLContextHandleWrapper>,
                config: FrameBuilderConfig,
                recorder: Option<Box<ApiRecordingReceiver>>,
@@ -68,6 +70,7 @@ impl RenderBackend {
                vr_compositor_handler: Arc<Mutex<Option<Box<VRCompositorHandler>>>>) -> RenderBackend {
 
         let resource_cache = ResourceCache::new(texture_cache,
+                                                vector_image_renderer,
                                                 enable_aa);
 
         RenderBackend {
@@ -131,6 +134,9 @@ impl RenderBackend {
                         }
                         ApiMsg::DeleteImage(id) => {
                             self.resource_cache.delete_image_template(id);
+                        }
+                        ApiMsg::AddVectorImage(id, descriptor, data) => {
+                            self.resource_cache.add_vector_image(id, descriptor, data);
                         }
                         ApiMsg::CloneApi(sender) => {
                             let result = self.next_namespace_id;

@@ -46,9 +46,10 @@ use util::TransformedRectKind;
 use webrender_traits::{ColorF, Epoch, PipelineId, RenderNotifier, RenderDispatcher};
 use webrender_traits::{ExternalImageId, ImageData, ImageFormat, RenderApiSender, RendererKind};
 use webrender_traits::{DeviceIntRect, DevicePoint, DeviceIntPoint, DeviceIntSize, DeviceUintSize};
-use webrender_traits::ImageDescriptor;
+use webrender_traits::{ImageDescriptor, VectorImageData};
 use webrender_traits::channel;
 use webrender_traits::VRCompositorHandler;
+use threadpool::ThreadPool;
 
 pub const GPU_DATA_TEXTURE_POOL: usize = 5;
 pub const MAX_VERTEX_TEXTURE_WIDTH: usize = 1024;
@@ -71,6 +72,10 @@ const GPU_TAG_PRIM_BOX_SHADOW: GpuProfileTag = GpuProfileTag { label: "BoxShadow
 const GPU_TAG_PRIM_BORDER: GpuProfileTag = GpuProfileTag { label: "Border", color: debug_colors::ORANGE };
 const GPU_TAG_PRIM_CACHE_IMAGE: GpuProfileTag = GpuProfileTag { label: "CacheImage", color: debug_colors::SILVER };
 const GPU_TAG_BLUR: GpuProfileTag = GpuProfileTag { label: "Blur", color: debug_colors::VIOLET };
+
+pub trait VectorImageRenderer: Send {
+    fn render(&mut self, data: &VectorImageData, thread_pool: &ThreadPool) -> Result<Vec<u8>, ()>;
+}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum BlendMode {
@@ -499,7 +504,7 @@ impl Renderer {
     /// };
     /// let (renderer, sender) = Renderer::new(opts);
     /// ```
-    pub fn new(options: RendererOptions) -> Result<(Renderer, RenderApiSender), InitError> {
+    pub fn new(mut options: RendererOptions) -> Result<(Renderer, RenderApiSender), InitError> {
         let (api_tx, api_rx) = try!{ channel::msg_channel() };
         let (payload_tx, payload_rx) = try!{ channel::payload_channel() };
         let (result_tx, result_rx) = channel();
@@ -757,6 +762,7 @@ impl Renderer {
         let render_target_debug = options.render_target_debug;
         let payload_tx_for_backend = payload_tx.clone();
         let recorder = options.recorder;
+        let vector_image_renderer = options.vector_image_renderer.take();
         try!{ thread::Builder::new().name("RenderBackend".to_string()).spawn(move || {
             let mut backend = RenderBackend::new(api_rx,
                                                  payload_rx,
@@ -766,6 +772,7 @@ impl Renderer {
                                                  texture_cache,
                                                  enable_aa,
                                                  backend_notifier,
+                                                 vector_image_renderer,
                                                  context_handle,
                                                  config,
                                                  recorder,
@@ -1706,7 +1713,6 @@ pub trait ExternalImageHandler {
     fn release(&mut self, key: ExternalImageId);
 }
 
-#[derive(Debug)]
 pub struct RendererOptions {
     pub device_pixel_ratio: f32,
     pub resource_override_path: Option<PathBuf>,
@@ -1721,6 +1727,7 @@ pub struct RendererOptions {
     pub clear_color: ColorF,
     pub render_target_debug: bool,
     pub recorder: Option<Box<ApiRecordingReceiver>>,
+    pub vector_image_renderer: Option<Box<VectorImageRenderer>>,
 }
 
 impl Default for RendererOptions {
@@ -1739,6 +1746,7 @@ impl Default for RendererOptions {
             clear_color: ColorF::new(1.0, 1.0, 1.0, 1.0),
             render_target_debug: false,
             recorder: None,
+            vector_image_renderer: None,
         }
     }
 }
