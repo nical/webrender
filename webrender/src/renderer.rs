@@ -21,6 +21,7 @@ use internal_types::{CacheTextureId, RendererFrame, ResultMsg, TextureUpdateOp};
 use internal_types::{ExternalImageUpdateList, TextureUpdateList, PackedVertex, RenderTargetMode};
 use internal_types::{ORTHO_NEAR_PLANE, ORTHO_FAR_PLANE, SourceTexture};
 use internal_types::{BatchTextures, TextureSampler, GLContextHandleWrapper};
+use internal_types::{VectorImageRenderer};
 use prim_store::GradientData;
 use profiler::{Profiler, BackendProfileCounters};
 use profiler::{GpuProfileTag, RendererProfileTimers, RendererProfileCounters};
@@ -46,10 +47,9 @@ use util::TransformedRectKind;
 use webrender_traits::{ColorF, Epoch, PipelineId, RenderNotifier, RenderDispatcher};
 use webrender_traits::{ExternalImageId, ImageData, ImageFormat, RenderApiSender, RendererKind};
 use webrender_traits::{DeviceIntRect, DevicePoint, DeviceIntPoint, DeviceIntSize, DeviceUintSize};
-use webrender_traits::{ImageDescriptor, VectorImageData};
+use webrender_traits::{ImageDescriptor};
 use webrender_traits::channel;
 use webrender_traits::VRCompositorHandler;
-use threadpool::ThreadPool;
 
 pub const GPU_DATA_TEXTURE_POOL: usize = 5;
 pub const MAX_VERTEX_TEXTURE_WIDTH: usize = 1024;
@@ -72,10 +72,6 @@ const GPU_TAG_PRIM_BOX_SHADOW: GpuProfileTag = GpuProfileTag { label: "BoxShadow
 const GPU_TAG_PRIM_BORDER: GpuProfileTag = GpuProfileTag { label: "Border", color: debug_colors::ORANGE };
 const GPU_TAG_PRIM_CACHE_IMAGE: GpuProfileTag = GpuProfileTag { label: "CacheImage", color: debug_colors::SILVER };
 const GPU_TAG_BLUR: GpuProfileTag = GpuProfileTag { label: "Blur", color: debug_colors::VIOLET };
-
-pub trait VectorImageRenderer: Send {
-    fn render(&mut self, data: &VectorImageData, thread_pool: &ThreadPool) -> Result<Vec<u8>, ()>;
-}
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum BlendMode {

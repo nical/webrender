@@ -6,7 +6,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use frame::Frame;
 use frame_builder::FrameBuilderConfig;
 use internal_types::{FontTemplate, GLContextHandleWrapper, GLContextWrapper};
-use internal_types::{SourceTexture, ResultMsg, RendererFrame};
+use internal_types::{SourceTexture, ResultMsg, RendererFrame, VectorImageRenderer};
 use profiler::BackendProfileCounters;
 use record::ApiRecordingReceiver;
 use resource_cache::ResourceCache;
@@ -21,7 +21,6 @@ use webrender_traits::{PipelineId, RenderNotifier, RenderDispatcher, WebGLComman
 use webrender_traits::channel::{PayloadHelperMethods, PayloadReceiver, PayloadSender, MsgReceiver};
 use webrender_traits::{VRCompositorCommand, VRCompositorHandler};
 use offscreen_gl_context::GLContextDispatcher;
-use renderer::VectorImageRenderer;
 
 /// The render backend is responsible for transforming high level display lists into
 /// GPU-friendly work which is then submitted to the renderer in the form of a frame::Frame.

@@ -17,11 +17,12 @@ use std::hash::BuildHasherDefault;
 use std::{i32, usize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use tiling;
 use webrender_traits::{Epoch, ColorF, PipelineId, DeviceIntSize};
 use webrender_traits::{ImageFormat, NativeFontHandle};
 use webrender_traits::{ExternalImageId, ScrollLayerId, WebGLCommand};
-use webrender_traits::{ImageData};
+use webrender_traits::{VectorImageData, ImageData, ImageKey};
 use webrender_traits::{DeviceUintRect};
 
 // An ID for a texture that is owned by the
@@ -486,4 +487,22 @@ pub enum LowLevelFilterOp {
     Opacity(Au),
     Saturate(Au),
     Sepia(Au),
+}
+
+pub struct RasterizedVectorImage {
+    pub width: u32,
+    pub height: u32,
+    pub bytes: Vec<u8>
+}
+
+pub struct VectorRasterJob {
+    pub key: ImageKey,
+    pub result: Option<RasterizedVectorImage>,
+}
+
+pub trait VectorImageRenderer: Send {
+    //fn init(workers: Arc<Mutex<ThreadPool>>);
+    fn add_vector_image(&mut self, key: ImageKey, data: VectorImageData);
+    fn delete_vector_image(&mut self, key: ImageKey);
+    fn render(&mut self, key: ImageKey, scaling_factor: f32, tx: Sender<VectorRasterJob>);
 }
