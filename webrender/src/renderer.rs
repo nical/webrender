@@ -1051,9 +1051,9 @@ impl Renderer {
         match *texture_id {
             SourceTexture::Invalid => TextureId::invalid(),
             SourceTexture::WebGL(id) => TextureId::new(id, TextureTarget::Default),
-            SourceTexture::External(external_image) => {
+            SourceTexture::External(external_id, _) => {
                 *self.external_images
-                     .get(&external_image.id)
+                     .get(&external_id)
                      .expect("BUG: External image should be resolved by now!")
             }
             SourceTexture::TextureCache(index) => {
@@ -1204,14 +1204,14 @@ impl Renderer {
                                                              mode,
                                                              Some(raw.as_slice()));
                                 }
-                                ImageData::External(ext_image) => {
-                                    match ext_image.image_type {
+                                ImageData::External(external_id, external_type) => {
+                                    match external_type {
                                         ExternalImageType::ExternalBuffer => {
                                             let handler = self.external_image_handler
                                                               .as_mut()
                                                               .expect("Found external image, but no handler set!");
 
-                                            match handler.lock(ext_image.id).source {
+                                            match handler.lock(external_id).source {
                                                 ExternalImageSource::RawData(raw) => {
                                                     self.device.init_texture(texture_id,
                                                                              width,
@@ -1223,7 +1223,7 @@ impl Renderer {
                                                 }
                                                 _ => panic!("No external buffer found"),
                                             };
-                                            handler.unlock(ext_image.id);
+                                            handler.unlock(external_id);
                                         }
                                         _ => {
                                             panic!("External texture handle should not use TextureUpdateOp::Create.");

@@ -784,8 +784,8 @@ impl TextureCache {
         match result.kind {
             AllocationKind::TexturePage => {
                 match data {
-                    ImageData::External(ext_image) => {
-                        match ext_image.image_type {
+                    ImageData::External(external_id, external_type) => {
+                        match external_type {
                             ExternalImageType::Texture2DHandle |
                             ExternalImageType::TextureRectHandle => {
                                 panic!("External texture handle should not go through texture_cache.");
@@ -795,7 +795,7 @@ impl TextureCache {
                                     id: result.item.texture_id,
                                     op: TextureUpdateOp::UpdateForExternalBuffer {
                                         rect: result.item.allocated_rect,
-                                        id: ext_image.id,
+                                        id: external_id,
                                         stride: stride,
                                     },
                                 };
@@ -827,8 +827,8 @@ impl TextureCache {
             }
             AllocationKind::Standalone => {
                 match data {
-                    ImageData::External(ext_image) => {
-                        match ext_image.image_type {
+                    ImageData::External(_, external_type) => {
+                        match external_type {
                             ExternalImageType::Texture2DHandle |
                             ExternalImageType::TextureRectHandle => {
                                 panic!("External texture handle should not go through texture_cache.");

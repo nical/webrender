@@ -26,7 +26,7 @@ use webrender_traits::{FontRenderMode, ImageData, GlyphDimensions, WebGLContextI
 use webrender_traits::{DevicePoint, DeviceIntSize, DeviceUintRect, ImageDescriptor, ColorF};
 use webrender_traits::{GlyphOptions, GlyphInstance, TileOffset, TileSize};
 use webrender_traits::{BlobImageRenderer, BlobImageDescriptor, BlobImageError};
-use webrender_traits::{ExternalImageData, ExternalImageType};
+use webrender_traits::{ExternalImageId, ExternalImageType};
 use threadpool::ThreadPool;
 use euclid::Point2D;
 
@@ -69,6 +69,12 @@ pub struct CacheItem {
     pub texture_id: SourceTexture,
     pub uv0: DevicePoint,
     pub uv1: DevicePoint,
+}
+
+#[derive(Debug, Copy, Clone, Eq, Hash, PartialEq)]
+pub struct ExternalImageData {
+    pub id: ExternalImageId,
+    pub image_type: ExternalImageType,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq, Debug, Ord, PartialOrd)]
@@ -263,12 +269,10 @@ impl ResourceCache {
         return match data {
             &ImageData::Raw(_) => { size_check }
             &ImageData::Blob(_) => { size_check }
-            &ImageData::External(ExternalImageData { image_type: ExternalImageType::ExternalBuffer, .. }) => {
-                size_check
-            },
+            &ImageData::External(_, ExternalImageType::ExternalBuffer) => { size_check },
             // External handles already represent existing textures so it does not
             // make sense to tile them into smaller ones.
-            &ImageData::External(_) => false,
+            &ImageData::External(..) => false,
         };
     }
 
@@ -351,11 +355,11 @@ impl ResourceCache {
         // If the key is associated to an external image, pass the external id to renderer for cleanup.
         if let Some(image) = value {
             match image.data {
-                ImageData::External(ext_image) => {
-                    match ext_image.image_type {
+                ImageData::External(external_id, external_type) => {
+                    match external_type {
                         ExternalImageType::Texture2DHandle |
                         ExternalImageType::TextureRectHandle => {
-                            self.pending_external_image_update_list.push(ext_image.id);
+                            self.pending_external_image_update_list.push(external_id);
                         }
                         _ => {}
                     }
@@ -546,11 +550,14 @@ impl ResourceCache {
         let image_template = &self.image_templates[&image_key];
 
         let external_image = match image_template.data {
-            ImageData::External(ext_image) => {
-                match ext_image.image_type {
+            ImageData::External(external_id, external_type) => {
+                match external_type {
                     ExternalImageType::Texture2DHandle |
                     ExternalImageType::TextureRectHandle => {
-                        Some(ext_image)
+                        Some(ExternalImageData {
+                            id: external_id,
+                            image_type: external_type,
+                        })
                     },
                     // external buffer uses resource_cache.
                     ExternalImageType::ExternalBuffer => None,
@@ -771,8 +778,8 @@ impl ResourceCache {
                               image_data: Option<ImageData>,
                               texture_cache_profile: &mut TextureCacheProfileCounters) {
         match self.image_templates.get(&request.key).unwrap().data {
-            ImageData::External(ext_image) => {
-                match ext_image.image_type {
+            ImageData::External(_, external_type) => {
+                match external_type {
                     ExternalImageType::Texture2DHandle |
                     ExternalImageType::TextureRectHandle => {
                         // external handle doesn't need to update the texture_cache.

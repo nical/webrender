@@ -77,17 +77,11 @@ pub enum ExternalImageType {
     ExternalBuffer,
 }
 
-#[derive(Debug, Copy, Clone, Eq, Hash, PartialEq, Serialize, Deserialize)]
-pub struct ExternalImageData {
-    pub id: ExternalImageId,
-    pub image_type: ExternalImageType,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub enum ImageData {
     Raw(Arc<Vec<u8>>),
     Blob(Arc<BlobImageData>),
-    External(ExternalImageData),
+    External(ExternalImageId, ExternalImageType),
 }
 
 impl ImageData {

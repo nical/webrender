@@ -75,8 +75,8 @@ impl AlphaBatchHelpers for PrimitiveStore {
                 let image_cpu = &self.cpu_images[metadata.cpu_prim_index.0];
 
                 match image_cpu.color_texture_id {
-                    SourceTexture::External(ext_image) => {
-                        match ext_image.image_type {
+                    SourceTexture::External(_, external_type) => {
+                        match external_type {
                             ExternalImageType::Texture2DHandle => AlphaBatchKind::Image,
                             ExternalImageType::TextureRectHandle => AlphaBatchKind::ImageRect,
                             _ => {
