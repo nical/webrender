@@ -24,7 +24,7 @@ use tiling::StackingContextIndex;
 use tiling::{AuxiliaryListsMap, ClipScrollGroup, ClipScrollGroupIndex, CompositeOps, Frame};
 use tiling::{PackedLayer, PackedLayerIndex, PrimitiveFlags, PrimitiveRunCmd, RenderPass};
 use tiling::{RenderTargetContext, RenderTaskCollection, ScrollbarPrimitive, StackingContext};
-use util::{self, pack_as_float, subtract_rect};
+use util::{self, pack_as_float, subtract_rect, recycle_vec};
 use util::RectHelpers;
 use webrender_traits::{BorderDetails, BorderDisplayItem, BoxShadowClipMode, ClipId, ClipRegion};
 use webrender_traits::{ColorF, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DeviceUintRect};
@@ -124,9 +124,26 @@ pub struct FrameBuilder {
 }
 
 impl FrameBuilder {
-    pub fn new(screen_size: DeviceUintSize,
+    pub fn new(previous: Option<FrameBuilder>,
+               screen_size: DeviceUintSize,
                background_color: Option<ColorF>,
                config: FrameBuilderConfig) -> FrameBuilder {
+        if let Some(prev) = previous {
+            return FrameBuilder {
+                stacking_context_store: recycle_vec(prev.stacking_context_store),
+                clip_scroll_group_store: recycle_vec(prev.clip_scroll_group_store),
+                cmds: recycle_vec(prev.cmds),
+                packed_layers: recycle_vec(prev.packed_layers),
+                scrollbar_prims: recycle_vec(prev.scrollbar_prims),
+                reference_frame_stack: recycle_vec(prev.reference_frame_stack),
+                stacking_context_stack: recycle_vec(prev.stacking_context_stack),
+                prim_store: prev.prim_store.recycle(),
+                screen_size: screen_size,
+                background_color: background_color,
+                config: config,
+            };
+        }
+
         FrameBuilder {
             screen_size: screen_size,
             background_color: background_color,
