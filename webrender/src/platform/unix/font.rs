@@ -157,12 +157,15 @@ impl FontContext {
             if result.succeeded() {
                 let bitmap = unsafe { &(*slot).bitmap };
 
+                // We always output glyphs in rgba format.
+                let bpp = 4;
+
                 let metrics = unsafe { &(*slot).metrics };
                 let mut glyph_width = (metrics.width >> 6) as i32;
                 let glyph_height = (metrics.height >> 6) as i32;
                 let mut final_buffer = Vec::with_capacity(glyph_width as usize *
                                                           glyph_height as usize *
-                                                          4);
+                                                          bpp as usize);
 
                 if bitmap.pixel_mode == FT_Pixel_Mode::FT_PIXEL_MODE_MONO as u8 {
                     // This is not exactly efficient... but it's only used by the
@@ -220,10 +223,10 @@ impl FontContext {
                     }
                 } else if bitmap.pixel_mode == FT_Pixel_Mode::FT_PIXEL_MODE_LCD as u8 {
                     // Extra subpixel on each side of the glyph.
-                    glyph_width += 2;
+                    glyph_width = bitmap.width as i32 / 3;
 
                     for y in 0..bitmap.rows {
-                        for x in 0..(bitmap.width / 3) {
+                        for x in 0..glyph_width {
                             let index = (y as i32 * bitmap.pitch) + (x as i32 * 3);
 
                             unsafe {
@@ -239,6 +242,8 @@ impl FontContext {
                 } else {
                     panic!("Unexpected render mode: {}!", bitmap.pixel_mode);
                 }
+
+                assert!(final_buffer.len() >= (glyph_width * bpp * glyph_height) as usize);
 
                 glyph = Some(RasterizedGlyph {
                     width: glyph_width as u32,
