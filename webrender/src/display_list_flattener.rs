@@ -2238,23 +2238,21 @@ impl<'a> DisplayListFlattener<'a> {
             tile_spacing = LayerSize::zero();
         }
 
-        let request = ImageRequest {
-            key: image_key,
-            rendering: image_rendering,
-            tile: tile_offset,
-        };
+        let is_tiled = tile_offset.is_none();
 
         // See if conditions are met to run through the new
         // image brush shader, which supports segments.
         if tile_spacing == LayerSize::zero() &&
            stretch_size == info.rect.size &&
            sub_rect.is_none() &&
-           tile_offset.is_none() {
+           !is_tiled {
             let prim = BrushPrimitive::new(
                 BrushKind::Image {
                     tile_spacing,
                     stretch_size,
-                    request,
+                    image_key,
+                    image_rendering,
+                    is_tiled,
                     current_epoch: Epoch::invalid(),
                     alpha_type,
                 },
@@ -2275,7 +2273,11 @@ impl<'a> DisplayListFlattener<'a> {
                 current_epoch: Epoch::invalid(),
                 source: ImageSource::Default,
                 key: ImageCacheKey {
-                    request,
+                    request: ImageRequest {
+                        key: image_key,
+                        rendering: image_rendering,
+                        tile: tile_offset,
+                    },
                     texel_rect: sub_rect.map(|texel_rect| {
                         DeviceIntRect::new(
                             DeviceIntPoint::new(

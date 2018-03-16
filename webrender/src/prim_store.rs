@@ -4,7 +4,7 @@
 
 use api::{AlphaType, BorderRadius, BoxShadowClipMode, BuiltDisplayList, ClipMode, ColorF, ComplexClipRegion};
 use api::{DeviceIntRect, DeviceIntSize, DevicePixelScale, Epoch, ExtendMode, FontRenderMode};
-use api::{GlyphInstance, GlyphKey, GradientStop, ImageKey, ImageRendering, ItemRange, ItemTag};
+use api::{GlyphInstance, GlyphKey, GradientStop, ImageKey, ImageRendering, ItemRange, ItemTag, TileOffset};
 use api::{LayerPoint, LayerRect, LayerSize, LayerToWorldTransform, LayerVector2D, DeviceUintSize, LineOrientation};
 use api::{LineStyle, PremultipliedColorF, YuvColorSpace, YuvFormat};
 use border::{BorderCornerInstance, BorderEdgeKind};
@@ -205,7 +205,9 @@ pub enum BrushKind {
     Image {
         tile_spacing: LayerSize,
         stretch_size: LayerSize,
-        request: ImageRequest,
+        image_key: ImageKey,
+        image_rendering: ImageRendering,
+        is_tiled: bool,
         current_epoch: Epoch,
         alpha_type: AlphaType,
     },
@@ -267,13 +269,13 @@ bitflags! {
     }
 }
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct BrushSegment {
     pub local_rect: LayerRect,
     pub clip_task_id: Option<RenderTaskId>,
     pub may_need_clip_mask: bool,
     pub edge_flags: EdgeAaSegmentMask,
-    pub image_request: Option<ImageRequest>,
+    pub tile: Option<TileOffset>,
 }
 
 impl BrushSegment {
@@ -288,7 +290,7 @@ impl BrushSegment {
             clip_task_id: None,
             may_need_clip_mask,
             edge_flags,
-            image_request: None,
+            tile: None,
         }
     }
 }
@@ -1202,10 +1204,10 @@ impl PrimitiveStore {
                 let brush = &mut self.cpu_brushes[metadata.cpu_prim_index.0];
 
                 match brush.kind {
-                    BrushKind::Image { request, ref mut current_epoch, tile_spacing, stretch_size, .. } => {
+                    BrushKind::Image { image_key, image_rendering, is_tiled, ref mut current_epoch, tile_spacing, stretch_size, .. } => {
                         let image_properties = frame_state
                             .resource_cache
-                            .get_image_properties(request.key);
+                            .get_image_properties(image_key);
 
                         if let Some(image_properties) = image_properties {
                             // See if this image has been updated since we last hit this code path.
@@ -1216,7 +1218,8 @@ impl PrimitiveStore {
                             }
 
 
-                            if let Some(tile_size) = image_properties.tiling {
+                            if is_tiled {
+                                let tile_size = image_properties.tiling.unwrap();
                                 let rect = metadata.local_rect;
                                 let device_image_size = DeviceUintSize::new(
                                     image_properties.descriptor.width,
@@ -1232,12 +1235,12 @@ impl PrimitiveStore {
                                         device_tile_size: tile_size as u32,
                                     },
                                     &mut|tile| {
-                                        let img_request = ImageRequest {
-                                            tile: Some(tile.tile_offset),
-                                            ..request
-                                        };
                                         frame_state.resource_cache.request_image(
-                                            img_request,
+                                            ImageRequest {
+                                                key: image_key,
+                                                rendering: image_rendering,
+                                                tile: Some(tile.tile_offset),
+                                            },
                                             frame_state.gpu_cache,
                                         );
                                         segments.push(BrushSegment {
@@ -1245,7 +1248,7 @@ impl PrimitiveStore {
                                             clip_task_id: None, // TODO: ??
                                             may_need_clip_mask: false, // TODO: ??
                                             edge_flags: EdgeAaSegmentMask::empty(),
-                                            image_request: Some(img_request),
+                                            tile: Some(tile.tile_offset),
                                         });
                                     }
                                 );
@@ -1259,7 +1262,11 @@ impl PrimitiveStore {
                                 })
                             } else {
                                 frame_state.resource_cache.request_image(
-                                    request,
+                                    ImageRequest {
+                                        key: image_key,
+                                        rendering: image_rendering,
+                                        tile: None,
+                                    },
                                     frame_state.gpu_cache,
                                 );
                             }
