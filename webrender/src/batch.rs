@@ -700,6 +700,46 @@ impl AlphaBatchBuilder {
                         render_tasks,
                         user_data,
                     );
+                } else {
+                    if let Some(ref segment_desc) = brush.segment_desc {
+                        for segment in &segment_desc.segments {
+                            if let BrushKind::Image { request, .. } = brush.kind {
+                                let cache_item = resolve_image(
+                                    request,
+                                    &ctx.resource_cache,
+                                    gpu_cache,
+                                    deferred_resolves,
+                                );
+
+                                let batch_kind = BrushBatchKind::Image(get_buffer_kind(cache_item.texture_id));
+                                let textures = BatchTextures::color(cache_item.texture_id);
+                                let user_data = [
+                                    cache_item.uv_rect_handle.as_int(gpu_cache),
+                                    BrushImageSourceKind::Color as i32,
+                                    RasterizationSpace::Local as i32,
+                                ];
+
+                                self.add_brush_to_batch(
+                                    brush,
+                                    prim_metadata,
+                                    batch_kind,
+                                    specified_blend_mode,
+                                    non_segmented_blend_mode,
+                                    textures,
+                                    clip_chain_rect_index,
+                                    clip_task_address,
+                                    &task_relative_bounding_rect,
+                                    prim_cache_address,
+                                    scroll_id,
+                                    task_address,
+                                    transform_kind,
+                                    z,
+                                    render_tasks,
+                                    user_data,
+                                );
+                            }
+                        }
+                    }
                 }
             }
             PrimitiveKind::Border => {
@@ -1299,9 +1339,9 @@ impl AlphaBatchBuilder {
                     });
 
                     if needs_blending {
-                        alpha_batch.push(instance);
+                        alpha_batch.push(instance)
                     } else {
-                        opaque_batch.push(instance);
+                        opaque_batch.push(instance)
                     }
                 }
             }

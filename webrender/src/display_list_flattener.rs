@@ -2252,6 +2252,8 @@ impl<'a> DisplayListFlattener<'a> {
            tile_offset.is_none() {
             let prim = BrushPrimitive::new(
                 BrushKind::Image {
+                    tile_spacing,
+                    stretch_size,
                     request,
                     current_epoch: Epoch::invalid(),
                     alpha_type,

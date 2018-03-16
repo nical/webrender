@@ -5,7 +5,7 @@
 use api::{AlphaType, BorderRadius, BoxShadowClipMode, BuiltDisplayList, ClipMode, ColorF, ComplexClipRegion};
 use api::{DeviceIntRect, DeviceIntSize, DevicePixelScale, Epoch, ExtendMode, FontRenderMode};
 use api::{GlyphInstance, GlyphKey, GradientStop, ImageKey, ImageRendering, ItemRange, ItemTag};
-use api::{LayerPoint, LayerRect, LayerSize, LayerToWorldTransform, LayerVector2D, LineOrientation};
+use api::{LayerPoint, LayerRect, LayerSize, LayerToWorldTransform, LayerVector2D, DeviceUintSize, LineOrientation};
 use api::{LineStyle, PremultipliedColorF, YuvColorSpace, YuvFormat};
 use border::{BorderCornerInstance, BorderEdgeKind};
 use clip_scroll_tree::{ClipChainIndex, ClipScrollNodeIndex, CoordinateSystemId};
@@ -18,6 +18,7 @@ use glyph_rasterizer::{FontInstance, FontTransform};
 use gpu_cache::{GpuBlockData, GpuCache, GpuCacheAddress, GpuCacheHandle, GpuDataRequest,
                 ToGpuBlocks};
 use gpu_types::{ClipChainRectIndex};
+use image::{decompose_image, TiledImageInfo};
 use picture::{PictureKind, PicturePrimitive};
 use render_task::{BlitSource, RenderTask, RenderTaskCacheKey, RenderTaskCacheKeyKind};
 use render_task::RenderTaskId;
@@ -202,6 +203,8 @@ pub enum BrushKind {
     },
     Picture,
     Image {
+        tile_spacing: LayerSize,
+        stretch_size: LayerSize,
         request: ImageRequest,
         current_epoch: Epoch,
         alpha_type: AlphaType,
@@ -270,6 +273,7 @@ pub struct BrushSegment {
     pub clip_task_id: Option<RenderTaskId>,
     pub may_need_clip_mask: bool,
     pub edge_flags: EdgeAaSegmentMask,
+    pub image_request: Option<ImageRequest>,
 }
 
 impl BrushSegment {
@@ -284,6 +288,7 @@ impl BrushSegment {
             clip_task_id: None,
             may_need_clip_mask,
             edge_flags,
+            image_request: None,
         }
     }
 }
@@ -1185,7 +1190,6 @@ impl PrimitiveStore {
                         }
                     }
 
-                    // Request source image from the texture cache, if required.
                     if request_source_image {
                         frame_state.resource_cache.request_image(
                             image_cpu.key.request,
@@ -1198,7 +1202,7 @@ impl PrimitiveStore {
                 let brush = &mut self.cpu_brushes[metadata.cpu_prim_index.0];
 
                 match brush.kind {
-                    BrushKind::Image { request, ref mut current_epoch, .. } => {
+                    BrushKind::Image { request, ref mut current_epoch, tile_spacing, stretch_size, .. } => {
                         let image_properties = frame_state
                             .resource_cache
                             .get_image_properties(request.key);
@@ -1210,12 +1214,57 @@ impl PrimitiveStore {
                                 *current_epoch = image_properties.epoch;
                                 metadata.opacity.is_opaque = image_properties.descriptor.is_opaque;
                             }
+
+
+                            if let Some(tile_size) = image_properties.tiling {
+                                let rect = metadata.local_rect;
+                                let device_image_size = DeviceUintSize::new(
+                                    image_properties.descriptor.width,
+                                    image_properties.descriptor.height,
+                                );
+                                let mut segments = Vec::new();
+                                decompose_image(
+                                    &TiledImageInfo {
+                                        rect,
+                                        tile_spacing,
+                                        stretch_size,
+                                        device_image_size,
+                                        device_tile_size: tile_size as u32,
+                                    },
+                                    &mut|tile| {
+                                        let img_request = ImageRequest {
+                                            tile: Some(tile.tile_offset),
+                                            ..request
+                                        };
+                                        frame_state.resource_cache.request_image(
+                                            img_request,
+                                            frame_state.gpu_cache,
+                                        );
+                                        segments.push(BrushSegment {
+                                            local_rect: tile.rect,
+                                            clip_task_id: None, // TODO: ??
+                                            may_need_clip_mask: false, // TODO: ??
+                                            edge_flags: EdgeAaSegmentMask::empty(),
+                                            image_request: Some(img_request),
+                                        });
+                                    }
+                                );
+                                let clip_mask_kind = match &brush.segment_desc {
+                                    &Some(ref desc) => desc.clip_mask_kind,
+                                    &None => BrushClipMaskKind::Unknown,
+                                };
+                                brush.segment_desc = Some(BrushSegmentDescriptor {
+                                    segments,
+                                    clip_mask_kind,
+                                })
+                            } else {
+                                frame_state.resource_cache.request_image(
+                                    request,
+                                    frame_state.gpu_cache,
+                                );
+                            }
                         }
 
-                        frame_state.resource_cache.request_image(
-                            request,
-                            frame_state.gpu_cache,
-                        );
                     }
                     BrushKind::YuvImage { format, yuv_key, image_rendering, .. } => {
                         let channel_num = format.get_plane_num();
