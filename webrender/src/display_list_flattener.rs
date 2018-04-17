@@ -724,6 +724,7 @@ impl<'a> DisplayListFlattener<'a> {
             }
             SpecificDisplayItem::Gradient(ref info) => {
                 self.add_gradient(
+                    pipeline_id,
                     clip_and_scroll,
                     &prim_info,
                     info.gradient.start_point,
@@ -768,6 +769,7 @@ impl<'a> DisplayListFlattener<'a> {
             }
             SpecificDisplayItem::Border(ref info) => {
                 self.add_border(
+                    pipeline_id,
                     clip_and_scroll,
                     &prim_info,
                     info,
@@ -1589,6 +1591,7 @@ impl<'a> DisplayListFlattener<'a> {
 
     pub fn add_border(
         &mut self,
+        pipeline_id: PipelineId,
         clip_and_scroll: ScrollNodeAndClipChain,
         info: &LayerPrimitiveInfo,
         border_item: &BorderDisplayItem,
@@ -1804,6 +1807,7 @@ impl<'a> DisplayListFlattener<'a> {
                 info.rect = segment;
 
                 self.add_gradient(
+                    pipeline_id,
                     clip_and_scroll,
                     &info,
                     border.gradient.start_point - segment_rel,
@@ -1887,8 +1891,52 @@ impl<'a> DisplayListFlattener<'a> {
         self.add_primitive(clip_and_scroll, info, Vec::new(), prim);
     }
 
+    pub fn push_repeated_picture(
+        &mut self,
+        pipeline_id: PipelineId,
+        clip_and_scroll: ScrollNodeAndClipChain,
+        info: &LayerPrimitiveInfo,
+        stretch_size: &LayerSize,
+        tile_spacing: &LayerSize,
+    ) {
+        // Setup a picture to render a single repetition into, similarly to how
+        // it's done in push_stacking_context.
+        let current_reference_frame_index = self.current_reference_frame_index();
+
+        let pic_index = self.prim_store.add_image_picture(
+            Some(PictureCompositeMode::Blit),
+            false,
+            pipeline_id,
+            current_reference_frame_index,
+            None,
+            true,
+        );
+
+        self.picture_stack.push(pic_index);
+
+        let stride = *stretch_size + *tile_spacing;
+        // number of repetitions along the x and y axis.
+        let rx = info.rect.size.width / stride.width;
+        let ry = info.rect.size.height / stride.height;
+
+        let prim_index = self.prim_store.add_primitive(
+            &LayerRect::zero(),
+            &LayerRect::max_rect(),
+            info.is_backface_visible,
+            None,
+            info.tag,
+            PrimitiveContainer::Brush(
+                BrushPrimitive::new_repeated_picture(pic_index, rx, ry)
+            ),
+        );
+
+        let parent_pic_index = *self.picture_stack.last().unwrap();
+        self.prim_store.pictures[parent_pic_index.0].add_primitive(prim_index, clip_and_scroll);
+    }
+
     pub fn add_gradient(
         &mut self,
+        pipeline_id: PipelineId,
         clip_and_scroll: ScrollNodeAndClipChain,
         info: &LayerPrimitiveInfo,
         start_point: LayerPoint,
@@ -1910,30 +1958,62 @@ impl<'a> DisplayListFlattener<'a> {
         };
 
         if tile_spacing != LayerSize::zero() {
-            let prim_infos = info.decompose(
+            self.push_repeated_picture(
+                pipeline_id,
+                clip_and_scroll,
+                &info, &stretch_size, &tile_spacing);
+
+            self.add_gradient_impl(
+                clip_and_scroll,
+                &LayerPrimitiveInfo {
+                    rect: LayerRect {
+                        origin: LayerPoint::zero(),
+                        size: stretch_size,
+                    },
+                    //clip_rect: LayerRect {
+                    //    origin: LayerRect::zer
+                    //}
+                    ..info
+                },
+                start_point,
+                end_point,
+                stops,
+                stops_count,
+                extend_mode,
+                gradient_index,
                 stretch_size,
-                tile_spacing,
-                64 * 64,
             );
 
-            if !prim_infos.is_empty() {
-                for prim_info in prim_infos {
-                    self.add_gradient_impl(
-                        clip_and_scroll,
-                        &prim_info,
-                        start_point,
-                        end_point,
-                        stops,
-                        stops_count,
-                        extend_mode,
-                        gradient_index,
-                        prim_info.rect.size,
-                    );
-                }
+            self.picture_stack.pop().expect("bug: mismatched picture stack");
 
-                return;
-            }
+            return;
         }
+
+
+//            let prim_infos = info.decompose(
+//                stretch_size,
+//                tile_spacing,
+//                64 * 64,
+//            );
+//
+//            if !prim_infos.is_empty() {
+//                for prim_info in prim_infos {
+//                    self.add_gradient_impl(
+//                        clip_and_scroll,
+//                        &prim_info,
+//                        start_point,
+//                        end_point,
+//                        stops,
+//                        stops_count,
+//                        extend_mode,
+//                        gradient_index,
+//                        prim_info.rect.size,
+//                    );
+//                }
+//
+//                return;
+//            }
+//        }
 
         self.add_gradient_impl(
             clip_and_scroll,

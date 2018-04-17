@@ -201,6 +201,7 @@ pub enum BrushKind {
     Clear,
     Picture {
         pic_index: PictureIndex,
+        repetitions: Option<(f32, f32)>,
     },
     Image {
         request: ImageRequest,
@@ -330,6 +331,21 @@ impl BrushPrimitive {
         BrushPrimitive {
             kind: BrushKind::Picture {
                 pic_index,
+                repetitions: None,
+            },
+            segment_desc: None,
+        }
+    }
+
+    pub fn new_repeated_picture(
+        pic_index: PictureIndex,
+        x_repetitions: f32,
+        y_repetitions: f32,
+    ) -> BrushPrimitive {
+        BrushPrimitive {
+            kind: BrushKind::Picture {
+                pic_index,
+                repetitions: Some((x_repetitions, y_repetitions)),
             },
             segment_desc: None,
         }
@@ -1508,6 +1524,12 @@ impl PrimitiveStore {
                                 0.0,
                                 0.0,
                             ]
+                        }
+                        BrushKind::Picture { repetitions, .. } => {
+                            match repetitions {
+                                Some((rx, ry)) => [rx, ry, 0.0, 0.0],
+                                _ => [1.0, 1.0, 0.0, 0.0],
+                            }
                         }
                         _ => {
                             [1.0, 1.0, 0.0, 0.0]
