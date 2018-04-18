@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use api::{AlphaType, BorderRadius, BoxShadowClipMode, BuiltDisplayList, ClipMode, ColorF, ComplexClipRegion};
-use api::{DeviceIntRect, DeviceIntSize, DevicePixelScale, Epoch, ExtendMode, FontRenderMode};
+use api::{DeviceIntRect, DeviceIntSize, DeviceUintSize, DevicePixelScale, Epoch, ExtendMode, FontRenderMode};
 use api::{FilterOp, GlyphInstance, GlyphKey, GradientStop, ImageKey, ImageRendering, ItemRange, ItemTag};
 use api::{LayerPoint, LayerRect, LayerSize, LayerToWorldTransform, LayerVector2D};
 use api::{PipelineId, PremultipliedColorF, Shadow, YuvColorSpace, YuvFormat};
@@ -210,6 +210,7 @@ pub enum BrushKind {
         tile_spacing: LayerSize,
         source: ImageSource,
         sub_rect: Option<DeviceIntRect>,
+        visible_tiles: Vec<TileOffset>,
     },
     YuvImage {
         yuv_key: [ImageKey; 3],
@@ -303,10 +304,26 @@ pub enum BrushClipMaskKind {
     Global,
 }
 
+#[repr(i32)]
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum SegmentSrc {
+    /// Segments sample their corresponding part of the source pattern.
+    ///
+    /// This is the common case, useful when using segments for clipping.
+    /// This must correspond to SEGMENT_SOURCE_AUTO in brush.glsl.
+    Auto = 0,
+    /// All segments sample from the entire source pattern.
+    ///
+    /// Useful when segments are used to decompose a repeated pattern.
+    /// This must correspond to SEGMENT_SOURCE_FULL in brush.glsl.
+    Full = 1,
+}
+
 #[derive(Debug)]
 pub struct BrushSegmentDescriptor {
     pub segments: Vec<BrushSegment>,
     pub clip_mask_kind: BrushClipMaskKind,
+    pub src: SegmentSrc,
 }
 
 #[derive(Debug)]
@@ -1168,6 +1185,7 @@ impl PrimitiveStore {
         frame_context: &FrameBuildingContext,
         frame_state: &mut FrameBuildingState,
     ) {
+        let mut tight_local_clip = false;
         let metadata = &mut self.cpu_metadata[prim_index.0];
         match metadata.prim_kind {
             PrimitiveKind::Border => {}
@@ -1297,7 +1315,16 @@ impl PrimitiveStore {
                 let brush = &mut self.cpu_brushes[metadata.cpu_prim_index.0];
 
                 match brush.kind {
-                    BrushKind::Image { request, sub_rect, stretch_size, ref mut tile_spacing, ref mut current_epoch, ref mut source, .. } => {
+                    BrushKind::Image {
+                        request,
+                        sub_rect,
+                        stretch_size,
+                        ref mut tile_spacing,
+                        ref mut current_epoch,
+                        ref mut source,
+                        ref mut visible_tiles,
+                        ..
+                    } => {
                         let image_properties = frame_state
                             .resource_cache
                             .get_image_properties(request.key);
@@ -1409,14 +1436,92 @@ impl PrimitiveStore {
                                 }
                             }
 
-                            if request_source_image {
+                            if let Some(tile_size) = image_properties.tiling {
+                                tight_local_clip = true;
+
+                                let device_image_size = DeviceUintSize::new(
+                                    image_properties.descriptor.width,
+                                    image_properties.descriptor.height,
+                                );
+
+                                let visible_rect = compute_conservatrive_visible_rect(
+                                    prim_run_context,
+                                    frame_context,
+                                    &metadata.local_clip_rect
+                                );
+
+                                let base_edge_flags = edge_flags_for_tile_spacing(tile_spacing);
+
+                                // TODO(review) should this always be true?
+                                let may_need_clip_mask = true;
+
+                                let mut segments = brush.segment_desc.take().map_or(Vec::new(), |desc| desc.segments);
+                                let previous_segment_count = segments.len();
+                                segments.clear();
+
+                                let stride = stretch_size + tile_spacing;
+
+                                visible_tiles.clear();
+
+                                for_each_repetition(
+                                    &metadata.local_rect,
+                                    &visible_rect,
+                                    &stride,
+                                    &mut |origin, edge_flags| {
+                                        let edge_flags = base_edge_flags | edge_flags;
+
+                                        let image_rect = LayerRect {
+                                            origin: *origin,
+                                            size: stretch_size,
+                                        };
+
+                                        for_each_tile(
+                                            &image_rect,
+                                            &visible_rect,
+                                            &device_image_size,
+                                            tile_size as u32,
+                                            &mut |segment_rect, tile_offset, tile_flags| {
+
+                                                frame_state.resource_cache.request_image(
+                                                    request.with_tile(tile_offset),
+                                                    frame_state.gpu_cache,
+                                                );
+                                                visible_tiles.push(tile_offset);
+
+                                                segments.push(
+                                                    BrushSegment::new(
+                                                        segment_rect.origin,
+                                                        segment_rect.size,
+                                                        may_need_clip_mask,
+                                                        tile_flags & edge_flags,
+                                                    ),
+                                                );
+                                            }
+                                        );
+                                    }
+                                );
+
+                                // If the number of gpu blocks for the request changes we can't reuse
+                                // the same gpu location.
+                                if previous_segment_count == segments.len() {
+                                    frame_state.gpu_cache.invalidate(&metadata.gpu_location);
+                                } else {
+                                    metadata.gpu_location = GpuCacheHandle::new();
+                                }
+
+                                brush.segment_desc = Some(BrushSegmentDescriptor {
+                                    segments,
+                                    clip_mask_kind: BrushClipMaskKind::Unknown,
+                                    src: SegmentSrc::Full,
+                                });
+
+                            } else if request_source_image {
                                 frame_state.resource_cache.request_image(
                                     request,
                                     frame_state.gpu_cache,
                                 );
                             }
                         }
-
                     }
                     BrushKind::YuvImage { format, yuv_key, image_rendering, .. } => {
                         let channel_num = format.get_plane_num();
@@ -1479,7 +1584,12 @@ impl PrimitiveStore {
         if let Some(mut request) = frame_state.gpu_cache.request(&mut metadata.gpu_location) {
             // has to match VECS_PER_BRUSH_PRIM
             request.push(metadata.local_rect);
-            request.push(metadata.local_clip_rect);
+
+            if tight_local_clip {
+                request.push(metadata.local_clip_rect.intersection(&metadata.local_rect).unwrap());
+            } else {
+                request.push(metadata.local_clip_rect);
+            }
 
             match metadata.prim_kind {
                 PrimitiveKind::Border => {
@@ -1688,6 +1798,7 @@ impl PrimitiveStore {
                     brush.segment_desc = Some(BrushSegmentDescriptor {
                         segments,
                         clip_mask_kind,
+                        src: SegmentSrc::Auto,
                     });
                 }
             }
