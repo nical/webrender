@@ -2189,6 +2189,7 @@ impl<'a> DisplayListFlattener<'a> {
                     tile_spacing,
                     source: ImageSource::Default,
                     sub_rect,
+                    visible_tiles: Vec::new(),
                 },
                 None,
             );

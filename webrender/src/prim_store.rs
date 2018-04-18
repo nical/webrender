@@ -6,7 +6,7 @@ use api::{AlphaType, BorderRadius, BoxShadowClipMode, BuiltDisplayList, ClipMode
 use api::{DeviceIntRect, DeviceIntSize, DeviceUintSize, DevicePixelScale, Epoch, ExtendMode, FontRenderMode};
 use api::{FilterOp, GlyphInstance, GlyphKey, GradientStop, ImageKey, ImageRendering, ItemRange, ItemTag};
 use api::{LayerPoint, LayerRect, LayerSize, LayerToWorldTransform, LayerVector2D};
-use api::{PipelineId, PremultipliedColorF, Shadow, YuvColorSpace, YuvFormat};
+use api::{PipelineId, PremultipliedColorF, Shadow, YuvColorSpace, YuvFormat, TileOffset};
 use border::{BorderCornerInstance, BorderEdgeKind};
 use box_shadow::BLUR_SAMPLE_SCALE;
 use clip_scroll_tree::{ClipChainIndex, ClipScrollNodeIndex, CoordinateSystemId};
@@ -19,6 +19,7 @@ use glyph_rasterizer::{FontInstance, FontTransform};
 use gpu_cache::{GpuBlockData, GpuCache, GpuCacheAddress, GpuCacheHandle, GpuDataRequest,
                 ToGpuBlocks};
 use gpu_types::{ClipChainRectIndex};
+use image::{for_each_tile, for_each_repetition};
 use picture::{PictureCompositeMode, PictureId, PicturePrimitive};
 use render_task::{BlitSource, RenderTask, RenderTaskCacheKey};
 use render_task::{RenderTaskCacheKeyKind, RenderTaskId, RenderTaskCacheEntryHandle};
@@ -194,6 +195,13 @@ pub struct PrimitiveMetadata {
 }
 
 #[derive(Debug)]
+pub struct VisibleImageTile {
+    pub tile_offset: TileOffset,
+    pub handle: GpuCacheHandle,
+    pub edge_flags: EdgeAaSegmentMask,
+}
+
+#[derive(Debug)]
 pub enum BrushKind {
     Solid {
         color: ColorF,
@@ -210,7 +218,7 @@ pub enum BrushKind {
         tile_spacing: LayerSize,
         source: ImageSource,
         sub_rect: Option<DeviceIntRect>,
-        visible_tiles: Vec<TileOffset>,
+        visible_tiles: Vec<VisibleImageTile>,
     },
     YuvImage {
         yuv_key: [ImageKey; 3],
@@ -304,26 +312,10 @@ pub enum BrushClipMaskKind {
     Global,
 }
 
-#[repr(i32)]
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum SegmentSrc {
-    /// Segments sample their corresponding part of the source pattern.
-    ///
-    /// This is the common case, useful when using segments for clipping.
-    /// This must correspond to SEGMENT_SOURCE_AUTO in brush.glsl.
-    Auto = 0,
-    /// All segments sample from the entire source pattern.
-    ///
-    /// Useful when segments are used to decompose a repeated pattern.
-    /// This must correspond to SEGMENT_SOURCE_FULL in brush.glsl.
-    Full = 1,
-}
-
 #[derive(Debug)]
 pub struct BrushSegmentDescriptor {
     pub segments: Vec<BrushSegment>,
     pub clip_mask_kind: BrushClipMaskKind,
-    pub src: SegmentSrc,
 }
 
 #[derive(Debug)]
@@ -1185,7 +1177,7 @@ impl PrimitiveStore {
         frame_context: &FrameBuildingContext,
         frame_state: &mut FrameBuildingState,
     ) {
-        let mut tight_local_clip = false;
+        let mut is_tiled_image = false;
         let metadata = &mut self.cpu_metadata[prim_index.0];
         match metadata.prim_kind {
             PrimitiveKind::Border => {}
@@ -1437,29 +1429,27 @@ impl PrimitiveStore {
                             }
 
                             if let Some(tile_size) = image_properties.tiling {
-                                tight_local_clip = true;
+                                is_tiled_image = true;
 
                                 let device_image_size = DeviceUintSize::new(
                                     image_properties.descriptor.width,
                                     image_properties.descriptor.height,
                                 );
 
+                                // Tighten the clip rect because decomposing the repeated image can
+                                // produce primitives that are partially covering the original image
+                                // rect and we want to clip these extra parts out.
+                                let tight_clip_rect = metadata.local_clip_rect.intersection(&metadata.local_rect).unwrap();
+
                                 let visible_rect = compute_conservatrive_visible_rect(
                                     prim_run_context,
                                     frame_context,
-                                    &metadata.local_clip_rect
+                                    &tight_clip_rect
                                 );
 
                                 let base_edge_flags = edge_flags_for_tile_spacing(tile_spacing);
 
-                                // TODO(review) should this always be true?
-                                let may_need_clip_mask = true;
-
-                                let mut segments = brush.segment_desc.take().map_or(Vec::new(), |desc| desc.segments);
-                                let previous_segment_count = segments.len();
-                                segments.clear();
-
-                                let stride = stretch_size + tile_spacing;
+                                let stride = stretch_size + *tile_spacing;
 
                                 visible_tiles.clear();
 
@@ -1480,41 +1470,29 @@ impl PrimitiveStore {
                                             &visible_rect,
                                             &device_image_size,
                                             tile_size as u32,
-                                            &mut |segment_rect, tile_offset, tile_flags| {
+                                            &mut |tile_rect, tile_offset, tile_flags| {
 
                                                 frame_state.resource_cache.request_image(
                                                     request.with_tile(tile_offset),
                                                     frame_state.gpu_cache,
                                                 );
-                                                visible_tiles.push(tile_offset);
 
-                                                segments.push(
-                                                    BrushSegment::new(
-                                                        segment_rect.origin,
-                                                        segment_rect.size,
-                                                        may_need_clip_mask,
-                                                        tile_flags & edge_flags,
-                                                    ),
-                                                );
+                                                let mut handle = GpuCacheHandle::new();
+                                                if let Some(mut request) = frame_state.gpu_cache.request(&mut handle) {
+                                                    request.push(*tile_rect);
+                                                    request.push(tight_clip_rect);
+                                                    request.write_segment(*tile_rect, [1.0, 1.0, 0.0, 0.0]);
+                                                }
+
+                                                visible_tiles.push(VisibleImageTile {
+                                                    tile_offset,
+                                                    handle,
+                                                    edge_flags: tile_flags & edge_flags,
+                                                });
                                             }
                                         );
                                     }
                                 );
-
-                                // If the number of gpu blocks for the request changes we can't reuse
-                                // the same gpu location.
-                                if previous_segment_count == segments.len() {
-                                    frame_state.gpu_cache.invalidate(&metadata.gpu_location);
-                                } else {
-                                    metadata.gpu_location = GpuCacheHandle::new();
-                                }
-
-                                brush.segment_desc = Some(BrushSegmentDescriptor {
-                                    segments,
-                                    clip_mask_kind: BrushClipMaskKind::Unknown,
-                                    src: SegmentSrc::Full,
-                                });
-
                             } else if request_source_image {
                                 frame_state.resource_cache.request_image(
                                     request,
@@ -1580,16 +1558,16 @@ impl PrimitiveStore {
             }
         }
 
+        if is_tiled_image {
+            // we already requested each tile's gpu data.
+            return;
+        }
+
         // Mark this GPU resource as required for this frame.
         if let Some(mut request) = frame_state.gpu_cache.request(&mut metadata.gpu_location) {
             // has to match VECS_PER_BRUSH_PRIM
             request.push(metadata.local_rect);
-
-            if tight_local_clip {
-                request.push(metadata.local_clip_rect.intersection(&metadata.local_rect).unwrap());
-            } else {
-                request.push(metadata.local_clip_rect);
-            }
+            request.push(metadata.local_clip_rect);
 
             match metadata.prim_kind {
                 PrimitiveKind::Border => {
@@ -1798,7 +1776,6 @@ impl PrimitiveStore {
                     brush.segment_desc = Some(BrushSegmentDescriptor {
                         segments,
                         clip_mask_kind,
-                        src: SegmentSrc::Auto,
                     });
                 }
             }
@@ -2308,6 +2285,41 @@ impl PrimitiveStore {
 
         result
     }
+}
+
+fn compute_conservatrive_visible_rect(
+    prim_run_context: &PrimitiveRunContext,
+    frame_context: &FrameBuildingContext,
+    local_clip_rect: &LayerRect,
+) -> LayerRect {
+    let world_screen_rect = prim_run_context
+        .clip_chain.combined_outer_screen_rect
+        .to_f32() / frame_context.device_pixel_scale;
+
+    if let Some(layer_screen_rect) = prim_run_context
+        .scroll_node
+        .world_content_transform
+        .unapply(&world_screen_rect) {
+
+        return local_clip_rect.intersection(&layer_screen_rect).unwrap_or(LayerRect::zero());
+    }
+
+    *local_clip_rect
+}
+
+fn edge_flags_for_tile_spacing(tile_spacing: &LayerSize) -> EdgeAaSegmentMask {
+    // If the number of gpu blocks for the request changes we can't reuse
+    // the same gpu location.
+    let mut flags = EdgeAaSegmentMask::empty();
+
+    if tile_spacing.width > 0.0 {
+        flags |= EdgeAaSegmentMask::LEFT | EdgeAaSegmentMask::RIGHT;
+    }
+    if tile_spacing.height > 0.0 {
+        flags |= EdgeAaSegmentMask::TOP | EdgeAaSegmentMask::BOTTOM;
+    }
+
+    flags
 }
 
 //Test for one clip region contains another
