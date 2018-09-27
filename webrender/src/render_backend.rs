@@ -601,6 +601,7 @@ impl RenderBackend {
                             }
 
                             if let Some(tx) = result_tx {
+                                let swap_hook_start_ns = precise_time_ns();
                                 let (resume_tx, resume_rx) = channel();
                                 tx.send(SceneSwapResult::Complete(resume_tx)).unwrap();
                                 // Block until the post-swap hook has completed on
@@ -608,6 +609,10 @@ impl RenderBackend {
                                 // we can sample from the sampler hook which might happen
                                 // in the update_document call below.
                                 resume_rx.recv().ok();
+                                let swap_hook_time_ns = precise_time_ns() - swap_hook_start_ns;
+                                if swap_hook_time_ns > 1_000_000 {
+                                    warn!("Swap hook took {} nanoseconds ({}ms)", swap_hook_time_ns, swap_hook_time_ns as f32 * 0.000001);
+                                }
                             }
                         } else {
                             // The document was removed while we were building it, skip it.
