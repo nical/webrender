@@ -62,39 +62,34 @@ vec3 HardLight(vec3 Cb, vec3 Cs) {
     return mix(m, s, step(edge, Cs));
 }
 
-// TODO: Worth doing with mix/step? Check GLSL output.
-float ColorDodge(float Cb, float Cs) {
-    if (Cb == 0.0)
-        return 0.0;
-    else if (Cs == 1.0)
-        return 1.0;
-    else
-        return min(1.0, Cb / (1.0 - Cs));
+#define if_then_else(cond, if_branch, else_branch) mix(else_branch, if_branch, cond)
+
+vec3 color_dodge(vec3 cb, vec3 cs) {
+    vec3 one = vec3(1.0);
+    vec3 zero = vec3(0.0);
+    vec3 color = min(one, cb / (one - cs));
+    color = if_then_else(equal(cb, zero), zero, color);
+    color = if_then_else(equal(cs, one), one, color);
+    return color;
 }
 
-// TODO: Worth doing with mix/step? Check GLSL output.
-float ColorBurn(float Cb, float Cs) {
-    if (Cb == 1.0)
-        return 1.0;
-    else if (Cs == 0.0)
-        return 0.0;
-    else
-        return 1.0 - min(1.0, (1.0 - Cb) / Cs);
+vec3 color_burn(vec3 cb, vec3 cs) {
+    vec3 one = vec3(1.0);
+    vec3 zero = vec3(0.0);
+    vec3 color = one - min(one, (one - cb) / cs);
+    color = if_then_else(equal(cb, one), one, color);
+    color = if_then_else(equal(cs, zero), zero, color);
+    return color;
 }
 
-float SoftLight(float Cb, float Cs) {
-    if (Cs <= 0.5) {
-        return Cb - (1.0 - 2.0 * Cs) * Cb * (1.0 - Cb);
-    } else {
-        float D;
-
-        if (Cb <= 0.25)
-            D = ((16.0 * Cb - 12.0) * Cb + 4.0) * Cb;
-        else
-            D = sqrt(Cb);
-
-        return Cb + (2.0 * Cs - 1.0) * (D - Cb);
-    }
+vec3 soft_light(vec3 cb, vec3 cs) {
+    vec3 one = vec3(1.0);
+    vec3 color_0 = cb - (one - 2.0 * cs) * cb * (one - cb);
+    vec3 sqrt_cb = vec3(sqrt(cb.r), sqrt(cb.g), sqrt(cb.b));
+    vec3 d = ((16.0 * cb - vec3(12.0)) * cb + vec3(4.0)) * cb;
+    d = if_then_else(lessThanEqual(cb, vec3(0.25)), d, sqrt_cb);
+    vec3 color_1 = cb + (2.0 * cs - one) * (d - cb);
+    return if_then_else(lessThanEqual(cs, vec3(0.5)), color_0, color_1);
 }
 
 vec3 Difference(vec3 Cb, vec3 Cs) {
@@ -105,9 +100,7 @@ vec3 Exclusion(vec3 Cb, vec3 Cs) {
     return Cb + Cs - 2.0 * Cb * Cs;
 }
 
-// These functions below are taken from the spec.
-// There's probably a much quicker way to implement
-// them in GLSL...
+
 float Sat(vec3 c) {
     return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
 }
@@ -117,23 +110,23 @@ float Lum(vec3 c) {
     return dot(c, f);
 }
 
-vec3 ClipColor(vec3 C) {
-    float L = Lum(C);
-    float n = min(C.r, min(C.g, C.b));
-    float x = max(C.r, max(C.g, C.b));
+vec3 clip_color(vec3 color) {
+    float l = Lum(color);
+    float cmin = min(color.r, min(color.g, color.b));
+    float cmax = max(color.r, max(color.g, color.b));
 
-    if (n < 0.0)
-        C = L + (((C - L) * L) / (L - n));
+    let color_0 = l + (((color - l) * l) / (l - cmin));
+    let color_1 = l + (((color - l) * (1.0 - l)) / (cmax - l));
 
-    if (x > 1.0)
-        C = L + (((C - L) * (1.0 - L)) / (x - L));
+    color = if_then_else(lessThan(cmin, 0.0), color_0, color);
+    color = if_then_else(greaterThan(cmax, 1.0), color_1, color);
 
-    return C;
+    return color;
 }
 
-vec3 SetLum(vec3 C, float l) {
-    float d = l - Lum(C);
-    return ClipColor(C + d);
+vec3 SetLum(vec3 color, float l) {
+    float d = l - Lum(color);
+    return clip_color(color + d);
 }
 
 void SetSatInner(inout float Cmin, inout float Cmid, inout float Cmax, float s) {
@@ -240,22 +233,16 @@ Fragment brush_fs() {
             result.rgb = max(Cs.rgb, Cb.rgb);
             break;
         case MixBlendMode_ColorDodge:
-            result.r = ColorDodge(Cb.r, Cs.r);
-            result.g = ColorDodge(Cb.g, Cs.g);
-            result.b = ColorDodge(Cb.b, Cs.b);
+            result.rgb = color_dodge(Cb.rgb, Cs.rgb);
             break;
         case MixBlendMode_ColorBurn:
-            result.r = ColorBurn(Cb.r, Cs.r);
-            result.g = ColorBurn(Cb.g, Cs.g);
-            result.b = ColorBurn(Cb.b, Cs.b);
+            result.rgb = color_burn(Cb.rgb, Cs.rgb);
             break;
         case MixBlendMode_HardLight:
             result.rgb = HardLight(Cb.rgb, Cs.rgb);
             break;
         case MixBlendMode_SoftLight:
-            result.r = SoftLight(Cb.r, Cs.r);
-            result.g = SoftLight(Cb.g, Cs.g);
-            result.b = SoftLight(Cb.b, Cs.b);
+            result.rgb = soft_light(Cb.rgb, Cs.rgb);
             break;
         case MixBlendMode_Difference:
             result.rgb = Difference(Cb.rgb, Cs.rgb);
