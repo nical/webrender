@@ -64,6 +64,14 @@ vec3 HardLight(vec3 Cb, vec3 Cs) {
 
 #define if_then_else(cond, if_branch, else_branch) mix(else_branch, if_branch, cond)
 
+float min_component(vec3 color) {
+    return min(color.r, min(color.g, color.b));
+}
+
+float max_component(vec3 color) {
+    return max(color.r, max(color.g, color.b));
+}
+
 vec3 color_dodge(vec3 cb, vec3 cs) {
     vec3 one = vec3(1.0);
     vec3 zero = vec3(0.0);
@@ -101,8 +109,8 @@ vec3 Exclusion(vec3 Cb, vec3 Cs) {
 }
 
 
-float Sat(vec3 c) {
-    return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+float Sat(vec3 color) {
+    return max_component(color) - min_component(color);
 }
 
 float Lum(vec3 c) {
@@ -112,8 +120,8 @@ float Lum(vec3 c) {
 
 vec3 clip_color(vec3 color) {
     float l = Lum(color);
-    float cmin = min(color.r, min(color.g, color.b));
-    float cmax = max(color.r, max(color.g, color.b));
+    float cmin = min_component(color);
+    float cmax = max_component(color);
 
     let color_0 = l + (((color - l) * l) / (l - cmin));
     let color_1 = l + (((color - l) * (1.0 - l)) / (cmax - l));
