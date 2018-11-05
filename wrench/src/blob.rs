@@ -38,7 +38,7 @@ fn render_blob(
     color: ColorU,
     descriptor: &BlobImageDescriptor,
     tile: Option<(TileSize, TileOffset)>,
-    dirty_rect: Option<DeviceUintRect>,
+    dirty_rect: &DirtyRect,
 ) -> BlobImageResult {
     // Allocate storage for the result. Right now the resource cache expects the
     // tiles to have have no stride or offset.
@@ -54,16 +54,22 @@ fn render_blob(
         None => true,
     };
 
-    let mut dirty_rect = dirty_rect.unwrap_or(DeviceUintRect::new(
-        descriptor.offset.to_u32(),
-        descriptor.size,
-    ));
-
-    if let Some((tile_size, tile)) = tile {
-        dirty_rect = intersect_for_tile(dirty_rect, size2(tile_size as u32, tile_size as u32),
-                                        tile_size, tile)
-            .expect("empty rects should be culled by webrender");
-    }
+    let dirty_rect = match tile {
+        Some((tile_size, tile)) => {
+            intersect_for_tile(
+                dirty_rect,
+                size2(tile_size as u32, tile_size as u32),
+                tile_size,
+                tile,
+            )
+        }
+        None => {
+            dirty_rect.to_subrect_of(&DeviceUintRect::new(
+                descriptor.offset.to_u32(),
+                descriptor.size,
+            ))
+        }
+    };
 
     for y in dirty_rect.min_y() .. dirty_rect.max_y() {
         for x in dirty_rect.min_x() .. dirty_rect.max_x() {
@@ -139,7 +145,7 @@ impl BlobImageHandler for CheckerboardRenderer {
             .insert(key, (deserialize_blob(&cmds[..]).unwrap(), tile_size));
     }
 
-    fn update(&mut self, key: ImageKey, cmds: Arc<BlobImageData>, _dirty_rect: Option<DeviceUintRect>) {
+    fn update(&mut self, key: ImageKey, cmds: Arc<BlobImageData>, _dirty_rect: &DirtyRect) {
         // Here, updating is just replacing the current version of the commands with
         // the new one (no incremental updates).
         self.image_cmds.get_mut(&key).unwrap().0 = deserialize_blob(&cmds[..]).unwrap();
@@ -175,7 +181,7 @@ struct Command {
     color: ColorU,
     descriptor: BlobImageDescriptor,
     tile: Option<(TileSize, TileOffset)>,
-    dirty_rect: Option<DeviceUintRect>
+    dirty_rect: DirtyRect,
 }
 
 struct Rasterizer {
@@ -205,7 +211,7 @@ impl AsyncBlobImageRasterizer for Rasterizer {
         ).collect();
 
         requests.iter().map(|cmd| {
-            (cmd.request, render_blob(cmd.color, &cmd.descriptor, cmd.tile, cmd.dirty_rect))
+            (cmd.request, render_blob(cmd.color, &cmd.descriptor, cmd.tile, &cmd.dirty_rect))
         }).collect()
     }
 }

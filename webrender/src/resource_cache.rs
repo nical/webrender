@@ -9,7 +9,7 @@ use api::{FontInstanceKey, FontKey, FontTemplate, GlyphIndex};
 use api::{ExternalImageData, ExternalImageType, BlobImageResult, BlobImageParams};
 use api::{FontInstanceData, FontInstanceOptions, FontInstancePlatformOptions, FontVariation};
 use api::{GlyphDimensions, IdNamespace};
-use api::{ImageData, ImageDescriptor, ImageKey, ImageRendering};
+use api::{ImageData, ImageDescriptor, ImageKey, ImageRendering, DirtyRect};
 use api::{MemoryReport, VoidPtrToSizeFn};
 use api::{TileOffset, TileSize, TileRange, BlobImageData};
 use app_units::Au;
@@ -111,7 +111,7 @@ enum RasterizedBlob {
 struct BlobImageTemplate {
     descriptor: ImageDescriptor,
     tiling: Option<TileSize>,
-    dirty_rect: Option<DeviceUintRect>,
+    dirty_rect: DirtyRect,
     viewport_tiles: Option<TileRange>,
 }
 
@@ -155,7 +155,7 @@ impl ImageTemplates {
 #[cfg_attr(feature = "replay", derive(Deserialize))]
 struct CachedImageInfo {
     texture_cache_handle: TextureCacheHandle,
-    dirty_rect: Option<DeviceUintRect>,
+    dirty_rect: DirtyRect,
     manual_eviction: bool,
 }
 
@@ -173,44 +173,34 @@ pub struct ResourceClassCache<K: Hash + Eq, V, U: Default> {
     pub user_data: U,
 }
 
+/// Computes the intersection of the dirty rect with the given tile, and then
+/// normalizes it to the tile's local coordinate space.
 pub fn intersect_for_tile(
-    dirty: DeviceUintRect,
+    dirty: &DirtyRect,
     clipped_tile_size: DeviceUintSize,
     tile_size: TileSize,
     tile_offset: TileOffset,
+) -> DeviceUintRect {
+    let tile_position = DeviceUintPoint::new(
+        tile_offset.x as u32 * tile_size as u32,
+        tile_offset.y as u32 * tile_size as u32,
+    );
 
-) -> Option<DeviceUintRect> {
-    dirty.intersection(&DeviceUintRect::new(
-        DeviceUintPoint::new(
-            tile_offset.x as u32 * tile_size as u32,
-            tile_offset.y as u32 * tile_size as u32
-        ),
+    let mut rect = dirty.to_subrect_of(&DeviceUintRect::new(
+        tile_position,
         clipped_tile_size,
-    )).map(|mut r| {
-        // we can't translate by a negative size so do it manually
-        r.origin.x -= tile_offset.x as u32 * tile_size as u32;
-        r.origin.y -= tile_offset.y as u32 * tile_size as u32;
-        r
-    })
-}
+    ));
 
-fn merge_dirty_rect(
-    prev_dirty_rect: &Option<DeviceUintRect>,
-    dirty_rect: &DeviceUintRect,
-    dst_size: &DeviceUintSize,
-) -> Option<DeviceUintRect> {
-    // It is important to never assume a dirty rect equal to None implies a full reupload here,
-    // although we are able to do so elsewhere. We store the image or tile's full rect instead
-    // There are update sequences which could cause us to forget the correct dirty regions
-    // regions if we cleared the dirty rect when we received None, e.g.:
-    //      1) Update with no dirty rect. We want to reupload everything.
-    //      2) Update with dirty rect B. We still want to reupload everything, not just B.
-    //      3) Perform the upload some time later.
-    let full_rect = DeviceUintRect::from(*dst_size);
-    match *prev_dirty_rect {
-        Some(ref prev_rect) => dirty_rect.union(&prev_rect),
-        None => *dirty_rect,
-    }.intersection(&full_rect)
+    // We can't translate by a negative size so do it manually.
+    //
+    // We check for emptiness here because empty rects may have zeroed out
+    // positions, in which case we will get a benign underflow that nonetheless
+    // causes a panic in debug builds.
+    if !rect.is_empty() {
+        rect.origin -= tile_position.to_vector();
+    }
+
+    rect
 }
 
 impl<K, V, U> ResourceClassCache<K, V, U>
@@ -514,7 +504,7 @@ impl ResourceCache {
                     self.add_image_template(img.key, img.descriptor, img.data, img.tiling);
                 }
                 ResourceUpdate::UpdateImage(img) => {
-                    self.update_image_template(img.key, img.descriptor, img.data, img.dirty_rect);
+                    self.update_image_template(img.key, img.descriptor, img.data, &img.dirty_rect);
                 }
                 ResourceUpdate::DeleteImage(img) => {
                     self.delete_image_template(img);
@@ -752,11 +742,8 @@ impl ResourceCache {
         image_key: ImageKey,
         descriptor: ImageDescriptor,
         data: ImageData,
-        dirty_rect: Option<DeviceUintRect>,
+        dirty_rect: &DirtyRect,
     ) {
-        let dirty_rect = dirty_rect.unwrap_or_else(|| {
-            descriptor.full_rect()
-        });
         let max_texture_size = self.max_texture_size();
         let image = match self.resources.image_templates.get_mut(image_key) {
             Some(res) => res,
@@ -772,25 +759,27 @@ impl ResourceCache {
         // updated independently.
         match self.cached_images.try_get_mut(&image_key) {
             Some(&mut ImageResult::UntiledAuto(ref mut entry)) => {
-                entry.dirty_rect = merge_dirty_rect(&entry.dirty_rect, &dirty_rect, &descriptor.size);
+                entry.dirty_rect = entry.dirty_rect.union(dirty_rect);
             }
             Some(&mut ImageResult::Multi(ref mut entries)) => {
                 let tile_size = tiling.unwrap();
                 for (key, entry) in entries.iter_mut() {
-                    let (local_dirty_rect, local_size) = match key.tile {
+                    // We want the dirty rect relative to the tile and not the whole image.
+                    let local_dirty_rect = match key.tile {
                         Some(tile) => {
-                            let tile_offset = DeviceUintPoint::new(tile.x as u32, tile.y as u32) * tile_size as u32;
-                            let mut tile_dirty_rect = dirty_rect;
-                            tile_dirty_rect.origin -= tile_offset.to_vector();
-                            (tile_dirty_rect, compute_tile_size(&descriptor, tile_size, tile))
+                            dirty_rect.map(|mut rect|{
+                                let tile_offset = DeviceUintPoint::new(
+                                    tile.x as u32,
+                                    tile.y as u32
+                                ) * tile_size as u32;
+                                rect.origin -= tile_offset.to_vector();
+
+                                rect
+                            })
                         }
-                        None => (dirty_rect, descriptor.size),
+                        None => *dirty_rect,
                     };
-                    entry.dirty_rect = merge_dirty_rect(
-                        &entry.dirty_rect,
-                        &local_dirty_rect,
-                        &local_size
-                    );
+                    entry.dirty_rect = entry.dirty_rect.union(&local_dirty_rect);
                 }
             }
             _ => {}
@@ -822,12 +811,7 @@ impl ResourceCache {
             BlobImageTemplate {
                 descriptor: *descriptor,
                 tiling,
-                dirty_rect: Some(
-                    DeviceUintRect::new(
-                        DeviceUintPoint::zero(),
-                        descriptor.size,
-                    )
-                ),
+                dirty_rect: DirtyRect::AllDirty,
                 viewport_tiles: None,
             },
         );
@@ -838,10 +822,10 @@ impl ResourceCache {
         &mut self,
         key: ImageKey,
         descriptor: &ImageDescriptor,
-        dirty_rect: &Option<DeviceUintRect>,
+        dirty_rect: &DirtyRect,
         data: Arc<BlobImageData>,
     ) {
-        self.blob_image_handler.as_mut().unwrap().update(key, data, *dirty_rect);
+        self.blob_image_handler.as_mut().unwrap().update(key, data, dirty_rect);
 
         let max_texture_size = self.max_texture_size();
 
@@ -854,11 +838,7 @@ impl ResourceCache {
         *image = BlobImageTemplate {
             descriptor: *descriptor,
             tiling,
-            dirty_rect: match (*dirty_rect, image.dirty_rect) {
-                (Some(rect), Some(prev_rect)) => Some(rect.union(&prev_rect)),
-                (Some(rect), None) => Some(rect),
-                (None, _) => None,
-            },
+            dirty_rect: dirty_rect.union(&image.dirty_rect),
             viewport_tiles: image.viewport_tiles,
         };
     }
@@ -929,7 +909,7 @@ impl ResourceCache {
                         &mut ImageResult::UntiledAuto(ref mut entry) => {
                             Some(mem::replace(entry, CachedImageInfo {
                                 texture_cache_handle: TextureCacheHandle::invalid(),
-                                dirty_rect: None,
+                                dirty_rect: DirtyRect::AllDirty,
                                 manual_eviction: false,
                             }))
                         }
@@ -952,7 +932,7 @@ impl ResourceCache {
                 entry.insert(if request.is_untiled_auto() {
                     ImageResult::UntiledAuto(CachedImageInfo {
                         texture_cache_handle: TextureCacheHandle::invalid(),
-                        dirty_rect: Some(template.descriptor.full_rect()),
+                        dirty_rect: DirtyRect::AllDirty,
                         manual_eviction: false,
                     })
                 } else {
@@ -969,7 +949,7 @@ impl ResourceCache {
                 entries.entry(request.into())
                     .or_insert(CachedImageInfo {
                         texture_cache_handle: TextureCacheHandle::invalid(),
-                        dirty_rect: Some(template.descriptor.full_rect()),
+                        dirty_rect: DirtyRect::AllDirty,
                         manual_eviction: false,
                     })
             },
@@ -978,7 +958,7 @@ impl ResourceCache {
 
         let needs_upload = self.texture_cache.request(&entry.texture_cache_handle, gpu_cache);
 
-        if !needs_upload && entry.dirty_rect.is_none() {
+        if !needs_upload && entry.dirty_rect.is_empty() {
             return
         }
 
@@ -1026,7 +1006,7 @@ impl ResourceCache {
                     BlobImageParams {
                         request,
                         descriptor,
-                        dirty_rect: None,
+                        dirty_rect: DirtyRect::AllDirty,
                     }
                 );
             }
@@ -1060,7 +1040,7 @@ impl ResourceCache {
                 });
 
                 // Don't request tiles that weren't invalidated.
-                if let Some(dirty_rect) = template.dirty_rect {
+                if let DirtyRect::SomeDirty(dirty_rect) = template.dirty_rect {
                     let dirty_rect = DeviceUintRect {
                         origin: point2(
                             dirty_rect.origin.x,
@@ -1118,7 +1098,7 @@ impl ResourceCache {
                                 tile: Some(tile),
                             },
                             descriptor,
-                            dirty_rect: None,
+                            dirty_rect: DirtyRect::AllDirty,
                         }
                     );
                 });
@@ -1151,7 +1131,7 @@ impl ResourceCache {
 
                 let dirty_rect = if needs_upload {
                     // The texture cache entry has been evicted, treat it as all dirty.
-                    None
+                    DirtyRect::AllDirty
                 } else {
                     template.dirty_rect
                 };
@@ -1171,7 +1151,7 @@ impl ResourceCache {
                     }
                 );
             }
-            template.dirty_rect = None;
+            template.dirty_rect = DirtyRect::empty();
         }
         let handler = self.blob_image_handler.as_mut().unwrap();
         handler.prepare_resources(&self.resources, &blob_request_params);
@@ -1528,7 +1508,7 @@ impl ResourceCache {
                 };
 
                 let mut descriptor = image_template.descriptor.clone();
-                let mut dirty_rect = entry.dirty_rect.take();
+                let mut dirty_rect = entry.dirty_rect.replace_with_empty();
 
                 if let Some(tile) = request.tile {
                     let tile_size = image_template.tiling.unwrap();
@@ -1553,8 +1533,8 @@ impl ResourceCache {
                 // If we are uploading the dirty region of a blob image we might have several
                 // rects to upload so we use each of these rasterized rects rather than the
                 // overall dirty rect of the image.
-                if blob_rasterized_rect.is_some() {
-                    dirty_rect = blob_rasterized_rect;
+                if let Some(rect) = blob_rasterized_rect {
+                    dirty_rect = DirtyRect::SomeDirty(rect);
                 }
 
                 let filter = match request.rendering {
@@ -1907,7 +1887,7 @@ impl ResourceCache {
                                 offset: DevicePoint::zero(),
                                 format: desc.format,
                             },
-                            dirty_rect: None,
+                            dirty_rect: DirtyRect::AllDirty,
                         }
                     ];
 

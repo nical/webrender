@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use api::{DeviceUintPoint, DeviceUintRect, DeviceUintSize};
+use api::{DeviceUintPoint, DeviceUintRect, DeviceUintSize, DirtyRect};
 use api::{ExternalImageType, ImageData, ImageFormat};
 use api::ImageDescriptor;
 use device::{TextureFilter, total_gpu_bytes_allocated};
@@ -397,7 +397,7 @@ impl TextureCache {
         filter: TextureFilter,
         data: Option<ImageData>,
         user_data: [f32; 3],
-        mut dirty_rect: Option<DeviceUintRect>,
+        mut dirty_rect: DirtyRect,
         gpu_cache: &mut GpuCache,
         eviction_notice: Option<&EvictionNotice>,
         uv_rect_kind: UvRectKind,
@@ -429,7 +429,7 @@ impl TextureCache {
             );
 
             // If we reallocated, we need to upload the whole item again.
-            dirty_rect = None;
+            dirty_rect = DirtyRect::AllDirty;
         }
 
         let entry = self.entries.get_opt_mut(handle)
@@ -468,7 +468,7 @@ impl TextureCache {
                 entry.size,
                 entry.texture_id,
                 layer_index as i32,
-                dirty_rect,
+                &dirty_rect,
             );
             self.pending_updates.push(op);
         }
@@ -1217,7 +1217,7 @@ impl TextureUpdate {
         size: DeviceUintSize,
         texture_id: CacheTextureId,
         layer_index: i32,
-        dirty_rect: Option<DeviceUintRect>,
+        dirty_rect: &DirtyRect,
     ) -> TextureUpdate {
         let source = match data {
             ImageData::Blob(..) => {
@@ -1242,8 +1242,8 @@ impl TextureUpdate {
             }
         };
 
-        let update_op = match dirty_rect {
-            Some(dirty) => {
+        let update_op = match *dirty_rect {
+            DirtyRect::SomeDirty(dirty) => {
                 // the dirty rectangle doesn't have to be within the area but has to intersect it, at least
                 let stride = descriptor.compute_stride();
                 let offset = descriptor.offset + dirty.origin.y * stride + dirty.origin.x * descriptor.format.bytes_per_pixel();
@@ -1262,7 +1262,7 @@ impl TextureUpdate {
                     layer_index,
                 }
             }
-            None => {
+            DirtyRect::AllDirty => {
                 TextureUpdateOp::Update {
                     rect: DeviceUintRect::new(origin, size),
                     source,
