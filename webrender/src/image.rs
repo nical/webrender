@@ -358,68 +358,44 @@ pub fn tiles(
     }
 }
 
-pub fn tiles2(
-    prim_rect: &LayoutIntRect,
+pub fn blob_tiles(
+    item_rect: &LayoutRect,
+    visible_rect: &LayoutIntRect,
     layout_tile_size: i32,
 ) -> TileIterator {
-    // Signed extents of the boundary tiles.
-    let left_boundary = match prim_rect.min_x() % layout_tile_size {
-        v if v > 0 => layout_tile_size - v,
-        v => v,
-    };
-    let upper_boundary = match prim_rect.min_y() % layout_tile_size {
-        v if v > 0 => layout_tile_size - v,
-        v => v,
-    };
-    let right_boundary = match prim_rect.max_x() % layout_tile_size {
-        v if v >= 0 => v,
-        v => layout_tile_size - v,
-    };
-    let lower_boundary = match prim_rect.max_y() % layout_tile_size {
-        v if v >= 0 => v,
-        v => layout_tile_size - v,
+
+    let (x_min, x_max, x_first, x_last, x_first_full, x_max_full) = tiles_xy(
+        visible_rect.min_x(),
+        visible_rect.max_x(),
+        layout_tile_size,
+    );
+    let (y_min, y_max, x_first, y_last, y_first_full, y_max_full) = tiles_xy(
+        visible_rect.min_y(),
+        visible_rect.max_y(),
+        layout_tile_size,
+    );
+
+    let tile_range = TileRange {
+        origin: point2(x_first, y_first),
+        size: size2(x_last - x_first, y_last - y_first),
     };
 
-    let mut full_tile_rect = LayoutIntRect {
-        origin: prim_rect.origin + vec2(
-            i32::abs(left_boundary),
-            i32::abs(upper_boundary),
-        ),
-        size: prim_rect.size - size2(
-            i32::abs(left_boundary) + i32::abs(right_boundary),
-            i32::abs(upper_boundary) + i32::abs(lower_boundary),
-        ),
-    };
-
-    let mut tile_range = TileRange {
-        origin: point2(
-            full_tile_rect.origin.x / layout_tile_size,
-            full_tile_rect.origin.y / layout_tile_size,
-        ),
-        size: size2(
-            full_tile_rect.size.width / layout_tile_size,
-            full_tile_rect.size.height / layout_tile_size,
-        ),
-    };
-
-    let mut left_boundary_offset = tile_range.min_x() - 1;
-    let mut upper_boundary_offset = tile_range.min_y() - 1;
-    let mut right_boundary_offset = tile_range.max_x() + 1;
-    let mut lower_boundary_offset = tile_range.max_y() + 1;
-
-    if left_boundary != 0 {
-        tile_range.origin.x -= 1;
-        tile_range.size.width += 1;
+    let mut row_flags = EdgeAaSegmentMask::TOP;
+    if y_last - y_first == 1 {
+        row_flags |= EdgeAaSegmentMask::BOTTOM;
     }
-    if upper_boundary != 0 {
-        tile_range.origin.y -= 1;
-        tile_range.size.height += 1;
-    }
-    if right_boundary != 0 {
-        tile_range.size.width += 1;
-    }
-    if lower_boundary != 0 {
-        tile_range.size.height += 1;
+
+    TileIterator {
+        current_x: x_first,
+        current_y: y_first,
+        x_count: x_last - x_first,
+        y_count: y_last - y_first,
+        row_flags,
+        origin: t0,
+        tile_size: layer_tile_size,
+        leftover_offset,
+        leftover_size: leftover_layer_size,
+        local_origin: prim_rect.origin,
     }
 }
 
@@ -463,7 +439,14 @@ pub fn tiles_xy(
         min_tile_range += 1;
     }
 
-
+    (
+        min_boundary,
+        max_boundary,
+        first_tile,
+        last_tile,
+        first_full_tile,
+        last_full_tile,
+    )
 }
 
 pub fn compute_tile_range(
