@@ -358,6 +358,114 @@ pub fn tiles(
     }
 }
 
+pub fn tiles2(
+    prim_rect: &LayoutIntRect,
+    layout_tile_size: i32,
+) -> TileIterator {
+    // Signed extents of the boundary tiles.
+    let left_boundary = match prim_rect.min_x() % layout_tile_size {
+        v if v > 0 => layout_tile_size - v,
+        v => v,
+    };
+    let upper_boundary = match prim_rect.min_y() % layout_tile_size {
+        v if v > 0 => layout_tile_size - v,
+        v => v,
+    };
+    let right_boundary = match prim_rect.max_x() % layout_tile_size {
+        v if v >= 0 => v,
+        v => layout_tile_size - v,
+    };
+    let lower_boundary = match prim_rect.max_y() % layout_tile_size {
+        v if v >= 0 => v,
+        v => layout_tile_size - v,
+    };
+
+    let mut full_tile_rect = LayoutIntRect {
+        origin: prim_rect.origin + vec2(
+            i32::abs(left_boundary),
+            i32::abs(upper_boundary),
+        ),
+        size: prim_rect.size - size2(
+            i32::abs(left_boundary) + i32::abs(right_boundary),
+            i32::abs(upper_boundary) + i32::abs(lower_boundary),
+        ),
+    };
+
+    let mut tile_range = TileRange {
+        origin: point2(
+            full_tile_rect.origin.x / layout_tile_size,
+            full_tile_rect.origin.y / layout_tile_size,
+        ),
+        size: size2(
+            full_tile_rect.size.width / layout_tile_size,
+            full_tile_rect.size.height / layout_tile_size,
+        ),
+    };
+
+    let mut left_boundary_offset = tile_range.min_x() - 1;
+    let mut upper_boundary_offset = tile_range.min_y() - 1;
+    let mut right_boundary_offset = tile_range.max_x() + 1;
+    let mut lower_boundary_offset = tile_range.max_y() + 1;
+
+    if left_boundary != 0 {
+        tile_range.origin.x -= 1;
+        tile_range.size.width += 1;
+    }
+    if upper_boundary != 0 {
+        tile_range.origin.y -= 1;
+        tile_range.size.height += 1;
+    }
+    if right_boundary != 0 {
+        tile_range.size.width += 1;
+    }
+    if lower_boundary != 0 {
+        tile_range.size.height += 1;
+    }
+}
+
+pub fn tiles_xy(
+    range_min: i32,
+    range_max: i32,
+    tile_size: i32
+) -> (
+    i32, // min_boundary
+    i32, // max_boundary
+    i32, // first_tile
+    i32, // last_tile
+    i32, // first_full_tile
+    i32, // last_full_tile
+) {
+    let min_boundary = match range_min % tile_size {
+        v if v > 0 => tile_size - v,
+        v => v,
+    };
+    let max_boundary = match range_max % tile_size {
+        v if v >= 0 => v,
+        v => tile_size - v,
+    };
+
+    // layout space
+    let min_full_tiles_offset: range_min + i32::abs(left_boundary);
+    let max_full_tiles_offset: range_max - i32::abs(left_boundary);
+
+    // in tiles
+    let mut min_tile_range = min_full_tiles_offset / tile_size;
+    let mut max_tile_range = max_full_tiles_offset / tile_size;
+
+    // in tiles
+    let mut min_boundary_tile_offset = min_tile_range - 1;
+    let mut max_boundary_tile_offset = max_tile_range + 1;
+
+    if min_boundary != 0 {
+        min_tile_range -= 1;
+    }
+    if max_boundary != 0 {
+        min_tile_range += 1;
+    }
+
+
+}
+
 pub fn compute_tile_range(
     visible_area: &DeviceIntRect,
     tile_size: u16,
