@@ -2,10 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-use api::{TileOffset, TileRange, LayoutRect, LayoutSize, LayoutPoint};
+use api::{TileOffset, TileRange, LayoutRect, LayoutSize, LayoutPoint, LayoutIntRect};
 use api::{DeviceIntSize, DeviceIntRect};
-use euclid::{vec2, point2};
+use euclid::{vec2, size2, point2};
 use prim_store::EdgeAaSegmentMask;
+
+use std::i32;
 
 /// If repetitions are far enough apart that only one is within
 /// the primitive rect, then we can simplify the parameters and
@@ -379,6 +381,111 @@ pub fn tiles(
         leftover_size_bottom,
         local_origin: prim_rect.origin,
     }
+}
+
+pub fn blob_tiles(
+    item_rect: &LayoutRect,
+    layout_tile_size: f32,
+    blob_visible_rect: &LayoutIntRect,
+    blob_tile_size: i32,
+) -> TileIterator {
+
+    let (
+        leftover_size_left,
+        leftover_size_right,
+        x_tile_range_start,
+        x_tile_range_end,
+        x_first_boundary_tile,
+        x_last_boundary_tile
+    ) = tiles_xy(
+        blob_visible_rect.min_x(),
+        blob_visible_rect.max_x(),
+        blob_tile_size,
+    );
+
+    let (
+        leftover_size_top,
+        leftover_size_bottom,
+        y_tile_range_start,
+        y_tile_range_end,
+        y_first_boundary_tile,
+        y_last_boundary_tile
+    ) = tiles_xy(
+        blob_visible_rect.min_y(),
+        blob_visible_rect.max_y(),
+        blob_tile_size,
+    );
+
+    let mut row_flags = EdgeAaSegmentMask::TOP;
+    if y_tile_range_end - y_tile_range_start == 1 {
+        row_flags |= EdgeAaSegmentMask::BOTTOM;
+    }
+
+    TileIterator {
+        current_x: x_tile_range_start,
+        current_y: y_tile_range_start,
+        x_count: x_tile_range_end - x_tile_range_start,
+        y_count: y_tile_range_end - y_tile_range_start,
+        row_flags,
+        origin: TileOffset::zero(),
+        tile_size: size2(layout_tile_size, layout_tile_size),
+        leftover_offset_left: x_first_boundary_tile,
+        leftover_offset_top: y_first_boundary_tile,
+        leftover_offset_right: x_last_boundary_tile,
+        leftover_offset_bottom: y_last_boundary_tile,
+        leftover_size_left: leftover_size_left as f32,
+        leftover_size_top: leftover_size_top as f32,
+        leftover_size_right: leftover_size_right as f32,
+        leftover_size_bottom: leftover_size_bottom as f32,
+        local_origin: item_rect.origin,
+    }
+}
+
+pub fn tiles_xy(
+    range_min: i32,
+    range_max: i32,
+    tile_size: i32
+) -> (
+    i32, // min_boundary
+    i32, // max_boundary
+    i32, // tile_range_start
+    i32, // tile_range_end
+    i32, // first_boundary_tile
+    i32, // last_boundary_tile
+) {
+    // Sizes of the boundary tiles in pixels
+    let min_boundary_pixels = match range_min % tile_size {
+        v if v > 0 => tile_size - v,
+        v => v,
+    };
+    let max_boundary_pixels = match range_max % tile_size {
+        v if v >= 0 => v,
+        v => tile_size - v,
+    };
+
+    // The other integer values below are offsets in number of tiles.
+
+    let first_is_full_tile = min_boundary_pixels == 0;
+    let last_is_full_tile = max_boundary_pixels == 0;
+
+    // Integer division rounds towards zero and we want to floor so we need to substract 1 if the tile
+    // offset is negative and it is not a full tile.
+    let tile_range_start = range_min / tile_size - if first_is_full_tile { 0 } else { 1 };
+    let tile_range_end = range_max / tile_size - if last_is_full_tile { 0 } else { 1 };
+
+    // If the first/last tile is a full tile (not a boundary tile) set the boundary tile
+    // index to a value the iterator can't reach.
+    let first_boundary_tile = if first_is_full_tile { i32::MIN } else { tile_range_start };
+    let last_boundary_tile = if last_is_full_tile { i32::MAX } else { tile_range_end };
+
+    (
+        min_boundary_pixels,
+        max_boundary_pixels,
+        tile_range_start,
+        tile_range_end,
+        first_boundary_tile,
+        last_boundary_tile,
+    )
 }
 
 pub fn compute_tile_range(
