@@ -162,8 +162,14 @@ pub struct TileIterator {
     y_count: i32,
     origin: TileOffset,
     tile_size: LayoutSize,
-    leftover_offset: TileOffset,
-    leftover_size: LayoutSize,
+    leftover_offset_left: i32,
+    leftover_offset_top: i32,
+    leftover_offset_right: i32,
+    leftover_offset_bottom: i32,
+    leftover_size_left: f32,
+    leftover_size_top: f32,
+    leftover_size_right: f32,
+    leftover_size_bottom: f32,
     local_origin: LayoutPoint,
     row_flags: EdgeAaSegmentMask,
 }
@@ -194,12 +200,16 @@ impl Iterator for TileIterator {
             size: self.tile_size,
         };
 
-        if tile_offset.x == self.leftover_offset.x {
-            segment_rect.size.width = self.leftover_size.width;
+        if tile_offset.x == self.leftover_offset_right {
+            segment_rect.size.width = self.leftover_size_right;
+        } else if tile_offset.x == self.leftover_offset_left {
+            segment_rect.size.width = self.leftover_size_left;
         }
 
-        if tile_offset.y == self.leftover_offset.y {
-            segment_rect.size.height = self.leftover_size.height;
+        if tile_offset.y == self.leftover_offset_bottom {
+            segment_rect.size.height = self.leftover_size_bottom;
+        } else if tile_offset.y == self.leftover_offset_top {
+            segment_rect.size.height = self.leftover_size_top;
         }
 
         let mut edge_flags = self.row_flags;
@@ -267,8 +277,14 @@ pub fn tiles(
                 row_flags: EdgeAaSegmentMask::empty(),
                 origin: TileOffset::zero(),
                 tile_size: LayoutSize::zero(),
-                leftover_offset: TileOffset::zero(),
-                leftover_size: LayoutSize::zero(),
+                leftover_offset_left: -1,
+                leftover_offset_top: -1,
+                leftover_offset_right: 0,
+                leftover_offset_bottom: 0,
+                leftover_size_left: 0.0,
+                leftover_size_top: 0.0,
+                leftover_size_right: 0.0,
+                leftover_size_bottom: 0.0,
                 local_origin: LayoutPoint::zero(),
             }
         }
@@ -295,16 +311,17 @@ pub fn tiles(
     );
 
     // The size in layer space of the tiles on the right and bottom edges.
-    let leftover_layer_size = LayoutSize::new(
-        layer_tile_size.width * leftover_device_size.width as f32 / device_tile_size_f32,
-        layer_tile_size.height * leftover_device_size.height as f32 / device_tile_size_f32,
-    );
+    let leftover_size_right = layer_tile_size.width * leftover_device_size.width as f32 / device_tile_size_f32;
+    let leftover_size_bottom = layer_tile_size.height * leftover_device_size.height as f32 / device_tile_size_f32;
 
     // Offset of the row and column of tiles with leftover size.
-    let leftover_offset = TileOffset::new(
-        device_image_size.width / device_tile_size,
-        device_image_size.height / device_tile_size,
-    );
+    let leftover_offset_right = device_image_size.width / device_tile_size;
+    let leftover_offset_bottom = device_image_size.height / device_tile_size;
+
+    // We don't have leftover top and left tiles in this case so set use a tile
+    // index that is unreachable.
+    let leftover_offset_left = -1;
+    let leftover_offset_top = -1;
 
     // Number of culled out tiles to skip before the first visible tile.
     let t0 = TileOffset::new(
@@ -325,16 +342,16 @@ pub fn tiles(
     // tiles with an empty size.
     let x_max = {
         let result = f32::ceil((visible_rect.max_x() - prim_rect.origin.x) / layer_tile_size.width) as i32;
-        if result == leftover_offset.x + 1 && leftover_layer_size.width == 0.0f32 {
-            leftover_offset.x
+        if result == leftover_offset_right + 1 && leftover_size_right == 0.0f32 {
+            leftover_offset_right
         } else {
             result
         }
     };
     let y_max = {
         let result = f32::ceil((visible_rect.max_y() - prim_rect.origin.y) / layer_tile_size.height) as i32;
-        if result == leftover_offset.y + 1 && leftover_layer_size.height == 0.0f32 {
-            leftover_offset.y
+        if result == leftover_offset_bottom + 1 && leftover_size_bottom == 0.0f32 {
+            leftover_offset_bottom
         } else {
             result
         }
@@ -352,101 +369,16 @@ pub fn tiles(
         row_flags,
         origin: t0,
         tile_size: layer_tile_size,
-        leftover_offset,
-        leftover_size: leftover_layer_size,
+        leftover_offset_left,
+        leftover_offset_top,
+        leftover_offset_right,
+        leftover_offset_bottom,
+        leftover_size_left: 0.0,
+        leftover_size_top: 0.0,
+        leftover_size_right,
+        leftover_size_bottom,
         local_origin: prim_rect.origin,
     }
-}
-
-pub fn blob_tiles(
-    item_rect: &LayoutRect,
-    visible_rect: &LayoutIntRect,
-    layout_tile_size: i32,
-) -> TileIterator {
-
-    let (x_min, x_max, x_first, x_last, x_first_full, x_max_full) = tiles_xy(
-        visible_rect.min_x(),
-        visible_rect.max_x(),
-        layout_tile_size,
-    );
-    let (y_min, y_max, x_first, y_last, y_first_full, y_max_full) = tiles_xy(
-        visible_rect.min_y(),
-        visible_rect.max_y(),
-        layout_tile_size,
-    );
-
-    let tile_range = TileRange {
-        origin: point2(x_first, y_first),
-        size: size2(x_last - x_first, y_last - y_first),
-    };
-
-    let mut row_flags = EdgeAaSegmentMask::TOP;
-    if y_last - y_first == 1 {
-        row_flags |= EdgeAaSegmentMask::BOTTOM;
-    }
-
-    TileIterator {
-        current_x: x_first,
-        current_y: y_first,
-        x_count: x_last - x_first,
-        y_count: y_last - y_first,
-        row_flags,
-        origin: t0,
-        tile_size: layer_tile_size,
-        leftover_offset,
-        leftover_size: leftover_layer_size,
-        local_origin: prim_rect.origin,
-    }
-}
-
-pub fn tiles_xy(
-    range_min: i32,
-    range_max: i32,
-    tile_size: i32
-) -> (
-    i32, // min_boundary
-    i32, // max_boundary
-    i32, // first_tile
-    i32, // last_tile
-    i32, // first_full_tile
-    i32, // last_full_tile
-) {
-    let min_boundary = match range_min % tile_size {
-        v if v > 0 => tile_size - v,
-        v => v,
-    };
-    let max_boundary = match range_max % tile_size {
-        v if v >= 0 => v,
-        v => tile_size - v,
-    };
-
-    // layout space
-    let min_full_tiles_offset: range_min + i32::abs(left_boundary);
-    let max_full_tiles_offset: range_max - i32::abs(left_boundary);
-
-    // in tiles
-    let mut min_tile_range = min_full_tiles_offset / tile_size;
-    let mut max_tile_range = max_full_tiles_offset / tile_size;
-
-    // in tiles
-    let mut min_boundary_tile_offset = min_tile_range - 1;
-    let mut max_boundary_tile_offset = max_tile_range + 1;
-
-    if min_boundary != 0 {
-        min_tile_range -= 1;
-    }
-    if max_boundary != 0 {
-        min_tile_range += 1;
-    }
-
-    (
-        min_boundary,
-        max_boundary,
-        first_tile,
-        last_tile,
-        first_full_tile,
-        last_full_tile,
-    )
 }
 
 pub fn compute_tile_range(
