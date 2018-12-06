@@ -381,6 +381,97 @@ pub fn tiles(
     }
 }
 
+pub fn blob_tiles(
+    item_rect: &LayoutRect,
+    visible_rect: &LayoutIntRect,
+    layout_tile_size: i32,
+) -> TileIterator {
+
+    let (x_min, x_max, x_first, x_last, x_first_full, x_max_full) = tiles_xy(
+        visible_rect.min_x(),
+        visible_rect.max_x(),
+        layout_tile_size,
+    );
+    let (y_min, y_max, x_first, y_last, y_first_full, y_max_full) = tiles_xy(
+        visible_rect.min_y(),
+        visible_rect.max_y(),
+        layout_tile_size,
+    );
+
+    let tile_range = TileRange {
+        origin: point2(x_first, y_first),
+        size: size2(x_last - x_first, y_last - y_first),
+    };
+
+    let mut row_flags = EdgeAaSegmentMask::TOP;
+    if y_last - y_first == 1 {
+        row_flags |= EdgeAaSegmentMask::BOTTOM;
+    }
+
+    TileIterator {
+        current_x: x_first,
+        current_y: y_first,
+        x_count: x_last - x_first,
+        y_count: y_last - y_first,
+        row_flags,
+        origin: t0,
+        tile_size: layer_tile_size,
+        leftover_offset,
+        leftover_size: leftover_layer_size,
+        local_origin: prim_rect.origin,
+    }
+}
+
+pub fn tiles_xy(
+    range_min: i32,
+    range_max: i32,
+    tile_size: i32
+) -> (
+    i32, // min_boundary
+    i32, // max_boundary
+    i32, // first_tile
+    i32, // last_tile
+    i32, // first_full_tile
+    i32, // last_full_tile
+) {
+    let min_boundary = match range_min % tile_size {
+        v if v > 0 => tile_size - v,
+        v => v,
+    };
+    let max_boundary = match range_max % tile_size {
+        v if v >= 0 => v,
+        v => tile_size - v,
+    };
+
+    // layout space
+    let min_full_tiles_offset = range_min + i32::abs(left_boundary);
+    let max_full_tiles_offset = range_max - i32::abs(left_boundary);
+
+    // in tiles
+    let mut min_tile_range = min_full_tiles_offset / tile_size;
+    let mut max_tile_range = max_full_tiles_offset / tile_size;
+
+    // in tiles
+    let mut min_boundary_tile_offset = min_tile_range - 1;
+    let mut max_boundary_tile_offset = max_tile_range + 1;
+
+    if min_boundary != 0 {
+        min_tile_range -= 1;
+    }
+    if max_boundary != 0 {
+        min_tile_range += 1;
+    }
+
+    (
+        min_boundary,
+        max_boundary,
+        first_tile,
+        last_tile,
+        first_full_tile,
+        last_full_tile,
+    )
+}
+
 pub fn compute_tile_range(
     visible_area: &DeviceIntRect,
     tile_size: u16,
