@@ -3306,6 +3306,7 @@ impl PrimitiveInstance {
                                     );
 
                                     for tile in tiles {
+                                        println!(" request tile {:?}", tile.offset);
                                         frame_state.resource_cache.request_image(
                                             request.with_tile(tile.offset),
                                             frame_state.gpu_cache,

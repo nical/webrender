@@ -1790,7 +1790,11 @@ pub fn compute_tile_size(
     } else {
         descriptor.size.height % base_size
     };
-
+    if actual_height == 0 {
+        println!("error: {:?} tile: {:?} tile size: {:?}", descriptor, tile, base_size);
+    }
+    assert!(actual_width > 0);
+    assert!(actual_height > 0);
     size2(actual_width, actual_height)
 }
 
