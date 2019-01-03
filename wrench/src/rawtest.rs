@@ -134,7 +134,10 @@ impl<'a> RawtestHarness<'a> {
     fn test_very_large_blob(&mut self) {
         println!("\tvery large blob...");
 
-        assert_eq!(self.wrench.device_pixel_ratio, 1.);
+        if self.wrench.device_pixel_ratio != 1.0 {
+            println!("Warning: Skipping this test because the device pixel ratio is not equal to 1");
+            return;
+        }
 
         let window_size = self.window.get_inner_size();
 
@@ -250,7 +253,10 @@ impl<'a> RawtestHarness<'a> {
         // missing tiles, and forcing it to exercise the code path where missing tiles are
         // rendered synchronously on demand.
 
-        assert_eq!(self.wrench.device_pixel_ratio, 1.);
+        if self.wrench.device_pixel_ratio != 1.0 {
+            println!("Warning: Skipping this test because the device pixel ratio is not equal to 1");
+            return;
+        }
 
         let window_size = self.window.get_inner_size();
         let test_size = DeviceIntSize::new(800, 800);
@@ -339,7 +345,10 @@ impl<'a> RawtestHarness<'a> {
     fn test_offscreen_blob(&mut self) {
         println!("\toffscreen blob update.");
 
-        assert_eq!(self.wrench.device_pixel_ratio, 1.);
+        if self.wrench.device_pixel_ratio != 1.0 {
+            println!("Warning: Skipping this test because the device pixel ratio is not equal to 1");
+            return
+        }
 
         let window_size = self.window.get_inner_size();
 
