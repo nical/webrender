@@ -114,6 +114,9 @@ pub struct DisplayListFlattener<'a> {
     /// output textures.
     output_pipelines: &'a FastHashSet<PipelineId>,
 
+    /// The pipeline ids encountered while building the scene.
+    active_pipeline_ids: &'a mut Vec<PipelineId>,
+
     /// The data structure that converting between ClipId/SpatialId and the various
     /// index types that the ClipScrollTree uses.
     id_to_index_mapper: NodeIdToIndexMapper,
@@ -158,6 +161,7 @@ impl<'a> DisplayListFlattener<'a> {
         frame_builder_config: &FrameBuilderConfig,
         new_scene: &mut Scene,
         interners: &mut Interners,
+        active_pipeline_ids: &mut Vec<PipelineId>,
         prim_store_stats: &PrimitiveStoreStats,
     ) -> FrameBuilder {
         // We checked that the root pipeline is available on the render backend.
@@ -168,12 +172,16 @@ impl<'a> DisplayListFlattener<'a> {
             .background_color
             .and_then(|color| if color.a > 0.0 { Some(color) } else { None });
 
+        active_pipeline_ids.clear();
+        active_pipeline_ids.push(root_pipeline.pipeline_id);
+
         let mut flattener = DisplayListFlattener {
             scene,
             clip_scroll_tree,
             font_instances,
             config: *frame_builder_config,
             output_pipelines,
+            active_pipeline_ids,
             id_to_index_mapper: NodeIdToIndexMapper::default(),
             hit_testing_runs: Vec::new(),
             pending_shadow_items: VecDeque::new(),
@@ -641,6 +649,7 @@ impl<'a> DisplayListFlattener<'a> {
         reference_frame_relative_offset: &LayoutVector2D,
     ) {
         let iframe_pipeline_id = info.pipeline_id;
+        self.active_pipeline_ids.push(iframe_pipeline_id);
         let pipeline = match self.scene.pipelines.get(&iframe_pipeline_id) {
             Some(pipeline) => pipeline,
             None => {

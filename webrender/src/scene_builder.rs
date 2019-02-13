@@ -63,7 +63,12 @@ impl Transaction {
             self.set_root_pipeline.is_none()
     }
 
-    pub fn should_build_scene(&self) -> bool {
+    /// Returns true if the transaction contains operations that
+    /// can trigger scene building.
+    ///
+    /// the scene builder can decide to skip scene building in some
+    /// cases even when this function returns true.
+    pub fn may_build_scene(&self) -> bool {
         !self.display_list_updates.is_empty() ||
             self.set_root_pipeline.is_some()
     }
@@ -256,6 +261,7 @@ impl_interner_mut! {
 // display lists.
 struct Document {
     scene: Scene,
+    active_pipelines_ids: Vec<PipelineId>,
     interners: Interners,
     prim_store_stats: PrimitiveStoreStats,
 }
@@ -264,6 +270,7 @@ impl Document {
     fn new(scene: Scene) -> Self {
         Document {
             scene,
+            active_pipelines_ids: Vec::new(),
             interners: Interners::default(),
             prim_store_stats: PrimitiveStoreStats::empty(),
         }
@@ -398,10 +405,12 @@ impl SceneBuilder {
 
             let mut built_scene = None;
             let mut interner_updates = None;
+            let mut active_pipelines_ids = Vec::new();
 
             if item.scene.has_root_pipeline() {
                 let mut clip_scroll_tree = ClipScrollTree::new();
                 let mut new_scene = Scene::new();
+
 
                 let frame_builder = DisplayListFlattener::create_frame_builder(
                     &item.scene,
@@ -412,6 +421,7 @@ impl SceneBuilder {
                     &self.config,
                     &mut new_scene,
                     &mut item.interners,
+                    &mut active_pipelines_ids,
                     &PrimitiveStoreStats::empty(),
                 );
 
@@ -431,6 +441,7 @@ impl SceneBuilder {
                 Document {
                     scene: item.scene,
                     interners: item.interners,
+                    active_pipelines_ids,
                     prim_store_stats: PrimitiveStoreStats::empty(),
                 },
             );
@@ -468,6 +479,17 @@ impl SceneBuilder {
                       .or_insert(Document::new(Scene::new()));
         let scene = &mut doc.scene;
 
+        let mut should_build_scene = false;
+
+        if let Some(id) = txn.set_root_pipeline {
+            scene.set_root_pipeline_id(id);
+            // Reset the active pipeline list and ensure is has the root pipeline, in
+            // case DisplayListFlattener::create_frame_builder is not called.
+            doc.active_pipelines_ids.clear();
+            doc.active_pipelines_ids.push(id);
+            should_build_scene = true;
+        }
+
         for update in txn.display_list_updates.drain(..) {
             scene.set_display_list(
                 update.pipeline_id,
@@ -477,14 +499,13 @@ impl SceneBuilder {
                 update.viewport_size,
                 update.content_size,
             );
+            if !should_build_scene {
+                should_build_scene = doc.active_pipelines_ids.contains(&update.pipeline_id);
+            }
         }
 
         for &(pipeline_id, epoch) in &txn.epoch_updates {
             scene.update_epoch(pipeline_id, epoch);
-        }
-
-        if let Some(id) = txn.set_root_pipeline {
-            scene.set_root_pipeline_id(id);
         }
 
         for pipeline_id in &txn.removed_pipelines {
@@ -493,7 +514,7 @@ impl SceneBuilder {
 
         let mut built_scene = None;
         let mut interner_updates = None;
-        if scene.has_root_pipeline() {
+        if scene.has_root_pipeline() && should_build_scene {
             if let Some(request) = txn.request_scene_build.take() {
                 let mut clip_scroll_tree = ClipScrollTree::new();
                 let mut new_scene = Scene::new();
@@ -507,6 +528,7 @@ impl SceneBuilder {
                     &self.config,
                     &mut new_scene,
                     &mut doc.interners,
+                    &mut doc.active_pipelines_ids,
                     &doc.prim_store_stats,
                 );
 

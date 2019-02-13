@@ -1259,7 +1259,7 @@ impl RenderBackend {
 
         let doc = self.documents.get_mut(&document_id).unwrap();
 
-        if txn.should_build_scene() {
+        if txn.may_build_scene() {
             txn.request_scene_build = Some(SceneRequest {
                 view: doc.view.clone(),
                 font_instances: self.resource_cache.get_font_instances(),
