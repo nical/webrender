@@ -932,7 +932,7 @@ impl<'a> RawtestHarness<'a> {
                 builder.push_shadow(
                     &PrimitiveInfo::new(rect(100., 100., 100., 100.)),
                     &space_and_clip,
-                    Shadow {
+                    ShadowDisplayItem {
                         offset: LayoutVector2D::new(1.0, 1.0),
                         blur_radius: 1.0,
                         color: ColorF::new(0.0, 0.0, 0.0, 1.0),
@@ -1004,7 +1004,7 @@ impl<'a> RawtestHarness<'a> {
             builder.push_shadow(
                 &PrimitiveInfo::new(rect(100., 100., 100., 100.)),
                 &space_and_clip,
-                Shadow {
+                ShadowDisplayItem {
                     offset: LayoutVector2D::new(1.0, 1.0),
                     blur_radius: 1.0,
                     color: shadow_color,

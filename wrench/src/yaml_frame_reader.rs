@@ -1636,7 +1636,7 @@ impl YamlFrameReader {
         dl.push_shadow(
             &info,
             &self.top_space_and_clip(),
-            Shadow {
+            ShadowDisplayItem {
                 blur_radius,
                 offset,
                 color,

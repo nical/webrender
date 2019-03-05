@@ -10,8 +10,8 @@ use api::{IframeDisplayItem, ImageKey, ImageRendering, ItemRange, LayoutPoint, C
 use api::{LayoutPrimitiveInfo, LayoutRect, LayoutSize, LayoutTransform, LayoutVector2D};
 use api::{LineOrientation, LineStyle, NinePatchBorderSource, PipelineId};
 use api::{PropertyBinding, ReferenceFrame, ReferenceFrameKind, ScrollFrameDisplayItem, ScrollSensitivity};
-use api::{Shadow, SpaceAndClipInfo, SpatialId, SpecificDisplayItem, StackingContext, StickyFrameDisplayItem, TexelRect};
-use api::{ClipMode, TransformStyle, YuvColorSpace, YuvData, TempFilterData};
+use api::{Shadow, ShadowDisplayItem, SpaceAndClipInfo, SpatialId, SpecificDisplayItem, StackingContext, TexelRect};
+use api::{ClipMode, TransformStyle, YuvColorSpace, YuvData, TempFilterData, StickyFrameDisplayItem};
 use app_units::Au;
 use clip::{ClipChainId, ClipRegion, ClipItemKey, ClipStore};
 use clip_scroll_tree::{ROOT_SPATIAL_NODE_INDEX, ClipScrollTree, SpatialNodeIndex};
@@ -1921,7 +1921,7 @@ impl<'a> DisplayListFlattener<'a> {
 
     pub fn push_shadow(
         &mut self,
-        shadow: Shadow,
+        shadow: ShadowDisplayItem,
         clip_and_scroll: ScrollNodeAndClipChain,
     ) {
         // Store this shadow in the pending list, for processing
@@ -2134,19 +2134,18 @@ impl<'a> DisplayListFlattener<'a> {
         P::Source: AsInstanceKind<Handle<P::Marker>> + InternDebug,
         Interners: InternerMut<P>,
     {
+        let shadow: Shadow = pending_shadow.shadow.into();
         // Offset the local rect and clip rect by the shadow offset.
         let mut info = pending_primitive.info.clone();
-        info.rect = info.rect.translate(&pending_shadow.shadow.offset);
-        info.clip_rect = info.clip_rect.translate(&pending_shadow.shadow.offset);
+        info.rect = info.rect.translate(&shadow.offset);
+        info.clip_rect = info.clip_rect.translate(&shadow.offset);
 
         // Construct and add a primitive for the given shadow.
         let shadow_prim_instance = self.create_primitive(
             &info,
             pending_primitive.clip_and_scroll.clip_chain_id,
             pending_primitive.clip_and_scroll.spatial_node_index,
-            pending_primitive.prim.create_shadow(
-                &pending_shadow.shadow,
-            ),
+            pending_primitive.prim.create_shadow(&shadow),
         );
 
         // Add the new primitive to the shadow picture.
@@ -2869,7 +2868,7 @@ pub struct PendingPrimitive<T> {
 /// As shadows are pushed, they are stored as pending
 /// shadows, and handled at once during pop_all_shadows.
 pub struct PendingShadow {
-    shadow: Shadow,
+    shadow: ShadowDisplayItem,
     clip_and_scroll: ScrollNodeAndClipChain,
 }
 

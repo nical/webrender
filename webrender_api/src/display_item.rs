@@ -123,7 +123,7 @@ pub enum SpecificDisplayItem {
     PushStackingContext(PushStackingContextDisplayItem),
     PopStackingContext,
     SetGradientStops,
-    PushShadow(Shadow),
+    PushShadow(ShadowDisplayItem),
     PopAllShadows,
     PushCacheMarker(CacheMarkerDisplayItem),
     PopCacheMarker,
@@ -158,7 +158,7 @@ pub enum CompletelySpecificDisplayItem {
     PushStackingContext(PushStackingContextDisplayItem),
     PopStackingContext,
     SetGradientStops(Vec<GradientStop>),
-    PushShadow(Shadow),
+    PushShadow(ShadowDisplayItem),
     PopAllShadows,
     PushCacheMarker(CacheMarkerDisplayItem),
     PopCacheMarker,
@@ -471,7 +471,25 @@ pub struct Shadow {
     pub offset: LayoutVector2D,
     pub color: ColorF,
     pub blur_radius: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ShadowDisplayItem {
+    pub offset: LayoutVector2D,
+    pub color: ColorF,
+    pub blur_radius: f32,
     pub should_inflate: bool,
+}
+
+impl Into<Shadow> for ShadowDisplayItem {
+    fn into(self) -> Shadow {
+        Shadow {
+            offset: self.offset,
+            color: self.color,
+            blur_radius: self.blur_radius,
+        }
+    }
 }
 
 #[repr(u8)]
@@ -640,8 +658,8 @@ pub enum FilterOp {
     Opacity(PropertyBinding<f32>, f32),
     Saturate(f32),
     Sepia(f32),
-    DropShadow(LayoutVector2D, f32, ColorF),
-    DropShadowStack(Vec<(LayoutVector2D, f32, ColorF)>),
+    DropShadow(Shadow),
+    DropShadowStack(Vec<Shadow>),
     ColorMatrix([f32; 20]),
     SrgbToLinear,
     LinearToSrgb,
@@ -657,9 +675,12 @@ impl FilterOp {
                 let radius = radius.min(MAX_BLUR_RADIUS);
                 FilterOp::Blur(radius)
             }
-            FilterOp::DropShadow(offset, radius, color) => {
-                let radius = radius.min(MAX_BLUR_RADIUS);
-                FilterOp::DropShadow(*offset, radius, *color)
+            FilterOp::DropShadow(shadow) => {
+                FilterOp::DropShadow(Shadow {
+                    offset: shadow.offset,
+                    blur_radius: shadow.blur_radius.min(MAX_BLUR_RADIUS),
+                    color: shadow.color
+                })
             }
             filter => filter.clone(),
         }

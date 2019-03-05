@@ -1593,7 +1593,7 @@ impl DisplayListBuilder {
         &mut self,
         layout: &di::LayoutPrimitiveInfo,
         space_and_clip: &di::SpaceAndClipInfo,
-        shadow: di::Shadow,
+        shadow: di::ShadowDisplayItem,
     ) {
         self.push_item(&di::SpecificDisplayItem::PushShadow(shadow), layout, space_and_clip);
     }
