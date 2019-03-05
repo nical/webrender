@@ -1507,7 +1507,7 @@ impl<'a> DisplayListFlattener<'a> {
         let leaf_pic_index = PictureIndex(self.prim_store.pictures
             .alloc()
             .init(PicturePrimitive::new_image(
-                leaf_composite_mode,
+                leaf_composite_mode.clone(),
                 leaf_context_3d,
                 stacking_context.pipeline_id,
                 stacking_context.frame_output_pipeline_id,
@@ -1612,13 +1612,13 @@ impl<'a> DisplayListFlattener<'a> {
                         PictureCompositeMode::ComponentTransferFilter(handle)
                     }
                 }
-                _ => PictureCompositeMode::Filter(filter),
+                _ => PictureCompositeMode::Filter(filter.clone()),
             });
 
             let filter_pic_index = PictureIndex(self.prim_store.pictures
                 .alloc()
                 .init(PicturePrimitive::new_image(
-                    composite_mode,
+                    composite_mode.clone(),
                     Picture3DContext::Out,
                     stacking_context.pipeline_id,
                     None,
@@ -1678,7 +1678,7 @@ impl<'a> DisplayListFlattener<'a> {
             let blend_pic_index = PictureIndex(self.prim_store.pictures
                 .alloc()
                 .init(PicturePrimitive::new_image(
-                    composite_mode,
+                    composite_mode.clone(),
                     Picture3DContext::Out,
                     stacking_context.pipeline_id,
                     None,
@@ -2030,7 +2030,7 @@ impl<'a> DisplayListFlattener<'a> {
                         // parent picture, which avoids an intermediate surface and blur.
                         let blur_filter = FilterOp::Blur(std_deviation).sanitize();
                         let composite_mode = PictureCompositeMode::Filter(blur_filter);
-                        let composite_mode_key = Some(composite_mode).into();
+                        let composite_mode_key = Some(composite_mode.clone()).into();
 
                         // Pass through configuration information about whether WR should
                         // do the bounding rect inflation for text shadows.
