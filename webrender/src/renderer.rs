@@ -32,7 +32,7 @@ use api::{channel};
 use api::DebugCommand;
 pub use api::DebugFlags;
 use api::channel::PayloadReceiverHelperMethods;
-use batch::{BatchKind, BatchTextures, BrushBatchKind};
+use batch::{BatchKind, BatchTextures, BrushBatchKind, ClipBatchList};
 #[cfg(any(feature = "capture", feature = "replay"))]
 use capture::{CaptureConfig, ExternalCaptureImage, PlainExternalImage};
 use debug_colors;
@@ -70,7 +70,7 @@ use render_backend::{FrameId, RenderBackend};
 use scene_builder::{SceneBuilder, LowPrioritySceneBuilder};
 use shade::{Shaders, WrShaders};
 use smallvec::SmallVec;
-use render_task::{RenderTask, RenderTaskKind, RenderTaskTree};
+use render_task::RenderTaskTree;
 use resource_cache::ResourceCache;
 use util::drain_filter;
 
@@ -1829,6 +1829,7 @@ impl Renderer {
             chase_primitive: options.chase_primitive,
             enable_picture_caching: options.enable_picture_caching,
             testing: options.testing,
+            gpu_supports_fast_clears: options.gpu_supports_fast_clears,
         };
 
         let device_pixel_ratio = options.device_pixel_ratio;
@@ -2257,9 +2258,19 @@ impl Renderer {
             target.zero_clears.len(),
         );
         debug_target.add(
+            debug_server::BatchKind::Cache,
+            "One Clears",
+            target.one_clears.len(),
+        );
+        debug_target.add(
             debug_server::BatchKind::Clip,
-            "BoxShadows",
-            target.clip_batcher.box_shadows.len(),
+            "BoxShadows [p]",
+            target.clip_batcher.primary_clips.box_shadows.len(),
+        );
+        debug_target.add(
+            debug_server::BatchKind::Clip,
+            "BoxShadows [s]",
+            target.clip_batcher.secondary_clips.box_shadows.len(),
         );
         debug_target.add(
             debug_server::BatchKind::Cache,
@@ -2273,11 +2284,19 @@ impl Renderer {
         );
         debug_target.add(
             debug_server::BatchKind::Clip,
-            "Rectangles",
-            target.clip_batcher.rectangles.len(),
+            "Rectangles [p]",
+            target.clip_batcher.primary_clips.rectangles.len(),
         );
-        for (_, items) in target.clip_batcher.images.iter() {
-            debug_target.add(debug_server::BatchKind::Clip, "Image mask", items.len());
+        debug_target.add(
+            debug_server::BatchKind::Clip,
+            "Rectangles [s]",
+            target.clip_batcher.secondary_clips.rectangles.len(),
+        );
+        for (_, items) in target.clip_batcher.primary_clips.images.iter() {
+            debug_target.add(debug_server::BatchKind::Clip, "Image mask [p]", items.len());
+        }
+        for (_, items) in target.clip_batcher.secondary_clips.images.iter() {
+            debug_target.add(debug_server::BatchKind::Clip, "Image mask [s]", items.len());
         }
 
         debug_target
@@ -2291,11 +2310,6 @@ impl Renderer {
             debug_server::BatchKind::Cache,
             "Scalings",
             target.scalings.len(),
-        );
-        debug_target.add(
-            debug_server::BatchKind::Cache,
-            "Readbacks",
-            target.readbacks.len(),
         );
         debug_target.add(
             debug_server::BatchKind::Cache,
@@ -3008,74 +3022,6 @@ impl Renderer {
         self.profile_counters.vertices.add(6 * data.len());
     }
 
-    fn handle_readback_composite(
-        &mut self,
-        draw_target: DrawTarget,
-        uses_scissor: bool,
-        source: &RenderTask,
-        backdrop: &RenderTask,
-        readback: &RenderTask,
-    ) {
-        if uses_scissor {
-            self.device.disable_scissor();
-        }
-
-        let cache_texture = self.texture_resolver
-            .resolve(&TextureSource::PrevPassColor)
-            .unwrap();
-
-        // Before submitting the composite batch, do the
-        // framebuffer readbacks that are needed for each
-        // composite operation in this batch.
-        let (readback_rect, readback_layer) = readback.get_target_rect();
-        let (backdrop_rect, _) = backdrop.get_target_rect();
-        let backdrop_screen_origin = match backdrop.kind {
-            RenderTaskKind::Picture(ref task_info) => task_info.content_origin,
-            _ => panic!("bug: composite on non-picture?"),
-        };
-        let source_screen_origin = match source.kind {
-            RenderTaskKind::Picture(ref task_info) => task_info.content_origin,
-            _ => panic!("bug: composite on non-picture?"),
-        };
-
-        // Bind the FBO to blit the backdrop to.
-        // Called per-instance in case the layer (and therefore FBO)
-        // changes. The device will skip the GL call if the requested
-        // target is already bound.
-        let cache_draw_target = DrawTarget::Texture {
-            texture: cache_texture,
-            layer: readback_layer.0 as usize,
-            with_depth: false,
-        };
-        self.device.bind_draw_target(cache_draw_target);
-
-        let mut src = DeviceIntRect::new(
-            source_screen_origin + (backdrop_rect.origin - backdrop_screen_origin),
-            readback_rect.size,
-        );
-        let mut dest = readback_rect.to_i32();
-
-        // Need to invert the y coordinates and flip the image vertically when
-        // reading back from the framebuffer.
-        if draw_target.is_default() {
-            src.origin.y = draw_target.dimensions().height as i32 - src.size.height - src.origin.y;
-            dest.origin.y += dest.size.height;
-            dest.size.height = -dest.size.height;
-        }
-
-        self.device.bind_read_target(draw_target.into());
-        self.device.blit_render_target(src, dest, TextureFilter::Linear);
-
-        // Restore draw target to current pass render target + layer, and reset
-        // the read target.
-        self.device.bind_draw_target(draw_target);
-        self.device.reset_read_target();
-
-        if uses_scissor {
-            self.device.enable_scissor();
-        }
-    }
-
     fn handle_blits(
         &mut self,
         blits: &[BlitJob],
@@ -3265,7 +3211,12 @@ impl Renderer {
             }
         }
 
-        self.handle_scaling(&target.scalings, TextureSource::PrevPassColor, projection, stats);
+        self.handle_scaling(
+            &target.scalings,
+            TextureSource::PrevPassColor,
+            projection,
+            stats,
+        );
 
         // Small helper fn to iterate a regions list, also invoking the closure
         // if there are no regions.
@@ -3394,20 +3345,6 @@ impl Renderer {
                             }
                         }
                         prev_blend_mode = batch.key.blend_mode;
-                    }
-
-                    // Handle special case readback for composites.
-                    if let BatchKind::Brush(BrushBatchKind::MixBlend { task_id, source_id, backdrop_id }) = batch.key.kind {
-                        // composites can't be grouped together because
-                        // they may overlap and affect each other.
-                        debug_assert_eq!(batch.instances.len(), 1);
-                        self.handle_readback_composite(
-                            draw_target,
-                            uses_scissor,
-                            &render_tasks[source_id],
-                            &render_tasks[task_id],
-                            &render_tasks[backdrop_id],
-                        );
                     }
 
                     let _timer = self.gpu_profile.start_timer(batch.key.kind.sampler_tag());
@@ -3550,6 +3487,69 @@ impl Renderer {
         }
     }
 
+    /// Draw all the instances in a clip batcher list to the current target.
+    fn draw_clip_batch_list(
+        &mut self,
+        list: &ClipBatchList,
+        projection: &Transform3D<f32>,
+        stats: &mut RendererStats,
+    ) {
+        // draw rounded cornered rectangles
+        if !list.rectangles.is_empty() {
+            let _gm2 = self.gpu_profile.start_marker("clip rectangles");
+            self.shaders.borrow_mut().cs_clip_rectangle.bind(
+                &mut self.device,
+                projection,
+                &mut self.renderer_errors,
+            );
+            self.draw_instanced_batch(
+                &list.rectangles,
+                VertexArrayKind::Clip,
+                &BatchTextures::no_texture(),
+                stats,
+            );
+        }
+        // draw box-shadow clips
+        for (mask_texture_id, items) in list.box_shadows.iter() {
+            let _gm2 = self.gpu_profile.start_marker("box-shadows");
+            let textures = BatchTextures {
+                colors: [
+                    mask_texture_id.clone(),
+                    TextureSource::Invalid,
+                    TextureSource::Invalid,
+                ],
+            };
+            self.shaders.borrow_mut().cs_clip_box_shadow
+                .bind(&mut self.device, projection, &mut self.renderer_errors);
+            self.draw_instanced_batch(
+                items,
+                VertexArrayKind::Clip,
+                &textures,
+                stats,
+            );
+        }
+
+        // draw image masks
+        for (mask_texture_id, items) in list.images.iter() {
+            let _gm2 = self.gpu_profile.start_marker("clip images");
+            let textures = BatchTextures {
+                colors: [
+                    mask_texture_id.clone(),
+                    TextureSource::Invalid,
+                    TextureSource::Invalid,
+                ],
+            };
+            self.shaders.borrow_mut().cs_clip_image
+                .bind(&mut self.device, projection, &mut self.renderer_errors);
+            self.draw_instanced_batch(
+                items,
+                VertexArrayKind::Clip,
+                &textures,
+                stats,
+            );
+        }
+    }
+
     fn draw_alpha_target(
         &mut self,
         draw_target: DrawTarget,
@@ -3567,24 +3567,29 @@ impl Renderer {
             self.device.bind_draw_target(draw_target);
             self.device.disable_depth();
             self.device.disable_depth_write();
+            self.set_blend(false, FramebufferKind::Other);
 
             // TODO(gw): Applying a scissor rect and minimal clear here
             // is a very large performance win on the Intel and nVidia
             // GPUs that I have tested with. It's possible it may be a
             // performance penalty on other GPU types - we should test this
             // and consider different code paths.
-            let clear_color = [1.0, 1.0, 1.0, 0.0];
-            self.device.clear_target(
-                Some(clear_color),
-                None,
-                Some(target.used_rect()),
-            );
 
             let zero_color = [0.0, 0.0, 0.0, 0.0];
             for &task_id in &target.zero_clears {
                 let (rect, _) = render_tasks[task_id].get_target_rect();
                 self.device.clear_target(
                     Some(zero_color),
+                    None,
+                    Some(rect),
+                );
+            }
+
+            let one_color = [1.0, 1.0, 1.0, 1.0];
+            for &task_id in &target.one_clears {
+                let (rect, _) = render_tasks[task_id].get_target_rect();
+                self.device.clear_target(
+                    Some(one_color),
                     None,
                     Some(rect),
                 );
@@ -3600,7 +3605,6 @@ impl Renderer {
         if !target.vertical_blurs.is_empty() || !target.horizontal_blurs.is_empty() {
             let _timer = self.gpu_profile.start_timer(GPU_TAG_BLUR);
 
-            self.set_blend(false, FramebufferKind::Other);
             self.shaders.borrow_mut().cs_blur_a8
                 .bind(&mut self.device, projection, &mut self.renderer_errors);
 
@@ -3623,70 +3627,39 @@ impl Renderer {
             }
         }
 
-        self.handle_scaling(&target.scalings, TextureSource::PrevPassAlpha, projection, stats);
+        self.handle_scaling(
+            &target.scalings,
+            TextureSource::PrevPassAlpha,
+            projection,
+            stats,
+        );
 
         // Draw the clip items into the tiled alpha mask.
         {
             let _timer = self.gpu_profile.start_timer(GPU_TAG_CACHE_CLIP);
 
-            // switch to multiplicative blending
+            // TODO(gw): Consider grouping multiple clip masks per shader
+            //           invocation here to reduce memory bandwith further?
+
+            // Draw the primary clip mask - since this is the first mask
+            // for the task, we can disable blending, knowing that it will
+            // overwrite every pixel in the mask area.
+            self.set_blend(false, FramebufferKind::Other);
+            self.draw_clip_batch_list(
+                &target.clip_batcher.primary_clips,
+                projection,
+                stats,
+            );
+
+            // switch to multiplicative blending for secondary masks, using
+            // multiplicative blending to accumulate clips into the mask.
             self.set_blend(true, FramebufferKind::Other);
             self.set_blend_mode_multiply(FramebufferKind::Other);
-
-            // draw rounded cornered rectangles
-            if !target.clip_batcher.rectangles.is_empty() {
-                let _gm2 = self.gpu_profile.start_marker("clip rectangles");
-                self.shaders.borrow_mut().cs_clip_rectangle.bind(
-                    &mut self.device,
-                    projection,
-                    &mut self.renderer_errors,
-                );
-                self.draw_instanced_batch(
-                    &target.clip_batcher.rectangles,
-                    VertexArrayKind::Clip,
-                    &BatchTextures::no_texture(),
-                    stats,
-                );
-            }
-            // draw box-shadow clips
-            for (mask_texture_id, items) in target.clip_batcher.box_shadows.iter() {
-                let _gm2 = self.gpu_profile.start_marker("box-shadows");
-                let textures = BatchTextures {
-                    colors: [
-                        mask_texture_id.clone(),
-                        TextureSource::Invalid,
-                        TextureSource::Invalid,
-                    ],
-                };
-                self.shaders.borrow_mut().cs_clip_box_shadow
-                    .bind(&mut self.device, projection, &mut self.renderer_errors);
-                self.draw_instanced_batch(
-                    items,
-                    VertexArrayKind::Clip,
-                    &textures,
-                    stats,
-                );
-            }
-
-            // draw image masks
-            for (mask_texture_id, items) in target.clip_batcher.images.iter() {
-                let _gm2 = self.gpu_profile.start_marker("clip images");
-                let textures = BatchTextures {
-                    colors: [
-                        mask_texture_id.clone(),
-                        TextureSource::Invalid,
-                        TextureSource::Invalid,
-                    ],
-                };
-                self.shaders.borrow_mut().cs_clip_image
-                    .bind(&mut self.device, projection, &mut self.renderer_errors);
-                self.draw_instanced_batch(
-                    items,
-                    VertexArrayKind::Clip,
-                    &textures,
-                    stats,
-                );
-            }
+            self.draw_clip_batch_list(
+                &target.clip_batcher.secondary_clips,
+                projection,
+                stats,
+            );
         }
 
         self.gpu_profile.finish_sampler(alpha_sampler);
@@ -4026,7 +3999,6 @@ impl Renderer {
 
     fn bind_frame_data(&mut self, frame: &mut Frame) {
         let _timer = self.gpu_profile.start_timer(GPU_TAG_SETUP_DATA);
-        self.device.set_device_pixel_ratio(frame.device_pixel_ratio);
 
         self.prim_header_f_texture.update(
             &mut self.device,
@@ -4274,6 +4246,10 @@ impl Renderer {
     }
 
     fn draw_frame_debug_items(&mut self, items: &[DebugItem]) {
+        if items.is_empty() {
+            return;
+        }
+
         let debug_renderer = match self.debug.get_mut(&mut self.device) {
             Some(render) => render,
             None => return,
@@ -4935,6 +4911,11 @@ pub struct RendererOptions {
     pub namespace_alloc_by_client: bool,
     pub enable_picture_caching: bool,
     pub testing: bool,
+    /// Set to true if this GPU supports hardware fast clears as a performance
+    /// optimization. Likely requires benchmarking on various GPUs to see if
+    /// it is a performance win. The default is false, which tends to be best
+    /// performance on lower end / integrated GPUs.
+    pub gpu_supports_fast_clears: bool,
 }
 
 impl Default for RendererOptions {
@@ -4973,6 +4954,7 @@ impl Default for RendererOptions {
             namespace_alloc_by_client: false,
             enable_picture_caching: false,
             testing: false,
+            gpu_supports_fast_clears: false,
         }
     }
 }

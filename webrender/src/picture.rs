@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use api::{FilterOp, MixBlendMode, PipelineId, PremultipliedColorF, PictureRect, PicturePoint, WorldPoint};
-use api::{DeviceIntRect, DeviceIntSize, DevicePoint, DeviceRect};
+use api::{DeviceIntRect, DeviceIntSize, DevicePoint, DeviceRect, DeviceSize};
 use api::{LayoutRect, PictureToRasterTransform, LayoutPixel, PropertyBinding, PropertyBindingId};
 use api::{DevicePixelScale, RasterRect, RasterSpace, ColorF, ImageKey, WorldSize, ClipMode, LayoutSize};
 use api::{PicturePixel, RasterPixel, WorldPixel, WorldRect, WorldVector2D, LayoutPoint};
@@ -36,7 +36,8 @@ use std::{mem, u16};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use texture_cache::TextureCacheHandle;
 use tiling::RenderTargetKind;
-use util::{ComparableVec, TransformedRectKind, MatrixHelpers, MaxRect};
+use util::{ComparableVec, TransformedRectKind, MatrixHelpers, MaxRect, scale_factors};
+use ::filterdata::{FilterDataHandle};
 
 /*
  A picture represents a dynamically rendered image. It consists of:
@@ -104,7 +105,7 @@ const TILE_SIZE_WIDTH: i32 = 1024;
 const TILE_SIZE_HEIGHT: i32 = 256;
 const TILE_SIZE_TESTING: i32 = 64;
 
-pub const FRAMES_BEFORE_PICTURE_CACHING: usize = 2;
+const FRAMES_BEFORE_PICTURE_CACHING: usize = 2;
 const MAX_DIRTY_RECTS: usize = 3;
 
 /// The maximum size per axis of a surface,
@@ -889,9 +890,9 @@ impl TileCache {
 
         // Work out the required device rect that we need to cover the screen,
         // given the world reference point constraint.
-        let device_ref_point = world_ref_point * frame_context.device_pixel_scale;
-        let device_world_rect = frame_context.screen_world_rect * frame_context.device_pixel_scale;
-        let pic_device_rect = pic_world_rect * frame_context.device_pixel_scale;
+        let device_ref_point = world_ref_point * frame_context.global_device_pixel_scale;
+        let device_world_rect = frame_context.screen_world_rect * frame_context.global_device_pixel_scale;
+        let pic_device_rect = pic_world_rect * frame_context.global_device_pixel_scale;
         let needed_device_rect = pic_device_rect
             .intersection(&device_world_rect)
             .unwrap_or(device_world_rect);
@@ -929,7 +930,7 @@ impl TileCache {
         // later to invalidate them if the content has changed.
         let mut old_tiles = FastHashMap::default();
         for tile in self.tiles.drain(..) {
-            let tile_device_pos = (tile.world_rect.origin + scroll_delta) * frame_context.device_pixel_scale;
+            let tile_device_pos = (tile.world_rect.origin + scroll_delta) * frame_context.global_device_pixel_scale;
             let key = (
                 (tile_device_pos.x + world_offset.x).round() as i32,
                 (tile_device_pos.y + world_offset.y).round() as i32,
@@ -939,12 +940,12 @@ impl TileCache {
 
         // Store parameters about the current tiling rect for use during dependency updates.
         self.world_origin = WorldPoint::new(
-            p0.x / frame_context.device_pixel_scale.0,
-            p0.y / frame_context.device_pixel_scale.0,
+            p0.x / frame_context.global_device_pixel_scale.0,
+            p0.y / frame_context.global_device_pixel_scale.0,
         );
         self.world_tile_size = WorldSize::new(
-            tile_width as f32 / frame_context.device_pixel_scale.0,
-            tile_height as f32 / frame_context.device_pixel_scale.0,
+            tile_width as f32 / frame_context.global_device_pixel_scale.0,
+            tile_height as f32 / frame_context.global_device_pixel_scale.0,
         );
         self.tile_count = TileSize::new(x_tiles, y_tiles);
 
@@ -966,8 +967,8 @@ impl TileCache {
 
                 tile.world_rect = WorldRect::new(
                     WorldPoint::new(
-                        px / frame_context.device_pixel_scale.0,
-                        py / frame_context.device_pixel_scale.0,
+                        px / frame_context.global_device_pixel_scale.0,
+                        py / frame_context.global_device_pixel_scale.0,
                     ),
                     self.world_tile_size,
                 );
@@ -1499,7 +1500,7 @@ impl TileCache {
 
                 if frame_context.debug_flags.contains(DebugFlags::PICTURE_CACHING_DBG) {
                     if let Some(world_rect) = tile.world_rect.intersection(&self.world_bounding_rect) {
-                        let tile_device_rect = world_rect * frame_context.device_pixel_scale;
+                        let tile_device_rect = world_rect * frame_context.global_device_pixel_scale;
                         let mut label_offset = DeviceVector2D::new(20.0, 30.0);
                         scratch.push_debug_rect(
                             tile_device_rect,
@@ -1526,7 +1527,7 @@ impl TileCache {
                 if frame_context.debug_flags.contains(DebugFlags::PICTURE_CACHING_DBG) {
                     if let Some(world_rect) = visible_rect.intersection(&self.world_bounding_rect) {
                         scratch.push_debug_rect(
-                            world_rect * frame_context.device_pixel_scale,
+                            world_rect * frame_context.global_device_pixel_scale,
                             debug_colors::RED,
                         );
                     }
@@ -1535,7 +1536,9 @@ impl TileCache {
                 // Only cache tiles that have had the same content for at least two
                 // frames. This skips caching on pages / benchmarks that are changing
                 // every frame, which is wasteful.
-                if tile.same_frames >= FRAMES_BEFORE_PICTURE_CACHING {
+                // When we are testing invalidation, we want WR to try to cache tiles each
+                // frame, to make it simpler to define the expected dirty rects.
+                if tile.same_frames >= FRAMES_BEFORE_PICTURE_CACHING || frame_context.config.testing {
                     // Ensure that this texture is allocated.
                     if !resource_cache.texture_cache.is_allocated(&tile.handle) {
                         resource_cache.texture_cache.update_picture_cache(
@@ -1547,7 +1550,7 @@ impl TileCache {
                     let cache_item = resource_cache
                         .get_texture_cache_item(&tile.handle);
 
-                    let src_origin = (visible_rect.origin * frame_context.device_pixel_scale).round().to_i32();
+                    let src_origin = (visible_rect.origin * frame_context.global_device_pixel_scale).round().to_i32();
                     let valid_rect = visible_rect.translate(&-tile.world_rect.origin.to_vector());
 
                     tile.valid_rect = visible_rect
@@ -1557,7 +1560,7 @@ impl TileCache {
 
                     // Store a blit operation to be done after drawing the
                     // frame in order to update the cached texture tile.
-                    let dest_rect = (valid_rect * frame_context.device_pixel_scale).round().to_i32();
+                    let dest_rect = (valid_rect * frame_context.global_device_pixel_scale).round().to_i32();
                     self.pending_blits.push(TileBlit {
                         target: cache_item,
                         src_offset: src_origin,
@@ -1805,6 +1808,8 @@ pub struct SurfaceInfo {
     pub tasks: Vec<RenderTaskId>,
     /// How much the local surface rect should be inflated (for blur radii).
     pub inflation_factor: f32,
+    /// The device pixel ratio specific to this surface.
+    pub device_pixel_scale: DevicePixelScale,
 }
 
 impl SurfaceInfo {
@@ -1814,6 +1819,7 @@ impl SurfaceInfo {
         inflation_factor: f32,
         world_rect: WorldRect,
         clip_scroll_tree: &ClipScrollTree,
+        device_pixel_scale: DevicePixelScale,
     ) -> Self {
         let map_surface_to_world = SpaceMapper::new_with_target(
             ROOT_SPATIAL_NODE_INDEX,
@@ -1839,6 +1845,7 @@ impl SurfaceInfo {
             surface_spatial_node_index,
             tasks: Vec::new(),
             inflation_factor,
+            device_pixel_scale,
         }
     }
 
@@ -1866,25 +1873,37 @@ bitflags! {
     /// A set of flags describing why a picture may need a backing surface.
     #[cfg_attr(feature = "capture", derive(Serialize))]
     pub struct BlitReason: u32 {
-        /// Mix-blend-mode on a child that requires isolation.
-        const ISOLATE = 1;
         /// Clip node that _might_ require a surface.
-        const CLIP = 2;
+        const CLIP = 1;
         /// Preserve-3D requires a surface for plane-splitting.
-        const PRESERVE3D = 4;
+        const PRESERVE3D = 2;
     }
 }
 
 /// Specifies how this Picture should be composited
 /// onto the target it belongs to.
 #[allow(dead_code)]
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 pub enum PictureCompositeMode {
+    /// Don't composite this picture in a standard way,
+    /// can be used for pictures that need to be isolated but used
+    /// manually, e.g. for the backdrop of mix-blend pictures.
+    Puppet {
+        /// The master picture that actually handles compositing
+        /// of this one. If that picture turns out to be invisible,
+        /// the puppet mode becomes a regular blit.
+        master: Option<PictureIndex>,
+    },
     /// Apply CSS mix-blend-mode effect.
-    MixBlend(MixBlendMode),
-    /// Apply a CSS filter.
+    MixBlend {
+        mode: MixBlendMode,
+        backdrop: PictureIndex,
+    },
+    /// Apply a CSS filter (except component transfer).
     Filter(FilterOp),
+    /// Apply a component transfer filter.
+    ComponentTransferFilter(FilterDataHandle),
     /// Draw to intermediate surface, copy straight across. This
     /// is used for CSS isolation, and plane splitting.
     Blit(BlitReason),
@@ -2262,7 +2281,7 @@ impl PicturePrimitive {
     /// gives a picture a chance to retain any cached tiles that
     /// may be useful during the next scene build.
     pub fn destroy(
-        mut self,
+        &mut self,
         retained_tiles: &mut RetainedTiles,
         clip_scroll_tree: &ClipScrollTree,
     ) {
@@ -2275,9 +2294,7 @@ impl PicturePrimitive {
                 clip_scroll_tree,
             );
 
-            for tile in tile_cache.tiles {
-                retained_tiles.tiles.push(tile);
-            }
+            retained_tiles.tiles.extend(tile_cache.tiles);
         }
     }
 
@@ -2691,6 +2708,7 @@ impl PicturePrimitive {
                 inflation_factor,
                 frame_context.screen_world_rect,
                 &frame_context.clip_scroll_tree,
+                frame_context.global_device_pixel_scale,
             );
 
             self.raster_config = Some(RasterConfig {
@@ -2851,6 +2869,7 @@ impl PicturePrimitive {
         surface_index: SurfaceIndex,
         frame_context: &FrameBuildingContext,
         frame_state: &mut FrameBuildingState,
+        data_stores: &mut DataStores,
     ) -> bool {
         let (mut pic_state_for_children, pic_context) = self.take_state_and_context();
 
@@ -2865,11 +2884,14 @@ impl PicturePrimitive {
             }
         };
 
-        let (raster_spatial_node_index, child_tasks) = {
+        let (raster_spatial_node_index, child_tasks, device_pixel_scale) = {
             let surface_info = &mut frame_state.surfaces[raster_config.surface_index.0];
-            (surface_info.raster_spatial_node_index, surface_info.take_render_tasks())
+            (
+                surface_info.raster_spatial_node_index,
+                surface_info.take_render_tasks(),
+                surface_info.device_pixel_scale,
+            )
         };
-        let surfaces = &mut frame_state.surfaces;
 
         let (map_raster_to_world, map_pic_to_raster) = create_raster_mappers(
             prim_instance.spatial_node_index,
@@ -2885,7 +2907,7 @@ impl PicturePrimitive {
             &map_pic_to_raster,
             &map_raster_to_world,
             clipped_prim_bounding_rect,
-            frame_context.device_pixel_scale,
+            device_pixel_scale,
         ) {
             Some(info) => info,
             None => return false,
@@ -2903,15 +2925,20 @@ impl PicturePrimitive {
             PictureCompositeMode::TileCache { .. } => {
                 // For a picture surface, just push any child tasks and tile
                 // blits up to the parent surface.
-                let surface = &mut surfaces[surface_index.0];
+                let surface = &mut frame_state.surfaces[surface_index.0];
                 surface.tasks.extend(child_tasks);
 
                 return true;
             }
             PictureCompositeMode::Filter(FilterOp::Blur(blur_radius)) => {
-                let blur_std_deviation = blur_radius * frame_context.device_pixel_scale.0;
-                let inflation_factor = surfaces[raster_config.surface_index.0].inflation_factor;
-                let inflation_factor = (inflation_factor * frame_context.device_pixel_scale.0).ceil() as i32;
+                let blur_std_deviation = blur_radius * device_pixel_scale.0;
+                let scale_factors = scale_factors(&transform);
+                let blur_std_deviation = DeviceSize::new(
+                    blur_std_deviation * scale_factors.0,
+                    blur_std_deviation * scale_factors.1
+                );
+                let inflation_factor = frame_state.surfaces[raster_config.surface_index.0].inflation_factor;
+                let inflation_factor = (inflation_factor * device_pixel_scale.0).ceil() as i32;
 
                 // The clipped field is the part of the picture that is visible
                 // on screen. The unclipped field is the screen-space rect of
@@ -2937,7 +2964,7 @@ impl PicturePrimitive {
                     &pic_rect,
                     &transform,
                     &device_rect,
-                    frame_context.device_pixel_scale,
+                    device_pixel_scale,
                     true,
                 );
 
@@ -2949,6 +2976,7 @@ impl PicturePrimitive {
                     child_tasks,
                     uv_rect_kind,
                     pic_context.raster_spatial_node_index,
+                    device_pixel_scale,
                 );
 
                 let picture_task_id = frame_state.render_tasks.add(picture_task);
@@ -2963,14 +2991,15 @@ impl PicturePrimitive {
 
                 let render_task_id = frame_state.render_tasks.add(blur_render_task);
 
-                surfaces[surface_index.0].tasks.push(render_task_id);
+                frame_state.surfaces[surface_index.0].tasks.push(render_task_id);
 
                 PictureSurface::RenderTask(render_task_id)
             }
             PictureCompositeMode::Filter(FilterOp::DropShadow(offset, blur_radius, color)) => {
-                let blur_std_deviation = blur_radius * frame_context.device_pixel_scale.0;
+                let blur_std_deviation = blur_radius * device_pixel_scale.0;
                 let blur_range = (blur_std_deviation * BLUR_SAMPLE_SCALE).ceil() as i32;
                 let rounded_std_dev = blur_std_deviation.round();
+                let rounded_std_dev = DeviceSize::new(rounded_std_dev, rounded_std_dev);
                 // The clipped field is the part of the picture that is visible
                 // on screen. The unclipped field is the screen-space rect of
                 // the complete picture, if no screen / clip-chain was applied
@@ -2991,7 +3020,7 @@ impl PicturePrimitive {
                     &pic_rect,
                     &transform,
                     &device_rect,
-                    frame_context.device_pixel_scale,
+                    device_pixel_scale,
                     true,
                 );
 
@@ -3003,6 +3032,7 @@ impl PicturePrimitive {
                     child_tasks,
                     uv_rect_kind,
                     pic_context.raster_spatial_node_index,
+                    device_pixel_scale,
                 );
                 picture_task.mark_for_saving();
 
@@ -3019,7 +3049,7 @@ impl PicturePrimitive {
                 self.secondary_render_task_id = Some(picture_task_id);
 
                 let render_task_id = frame_state.render_tasks.add(blur_render_task);
-                surfaces[surface_index.0].tasks.push(render_task_id);
+                frame_state.surfaces[surface_index.0].tasks.push(render_task_id);
 
                 if let Some(mut request) = frame_state.gpu_cache.request(&mut self.extra_gpu_data_handle) {
                     // TODO(gw): This is very hacky code below! It stores an extra
@@ -3051,36 +3081,6 @@ impl PicturePrimitive {
 
                 PictureSurface::RenderTask(render_task_id)
             }
-            PictureCompositeMode::MixBlend(..) => {
-                let uv_rect_kind = calculate_uv_rect_kind(
-                    &pic_rect,
-                    &transform,
-                    &clipped,
-                    frame_context.device_pixel_scale,
-                    true,
-                );
-
-                let picture_task = RenderTask::new_picture(
-                    RenderTaskLocation::Dynamic(None, clipped.size),
-                    unclipped.size,
-                    pic_index,
-                    clipped.origin,
-                    child_tasks,
-                    uv_rect_kind,
-                    pic_context.raster_spatial_node_index,
-                );
-
-                let readback_task_id = frame_state.render_tasks.add(
-                    RenderTask::new_readback(clipped)
-                );
-
-                self.secondary_render_task_id = Some(readback_task_id);
-                surfaces[surface_index.0].tasks.push(readback_task_id);
-
-                let render_task_id = frame_state.render_tasks.add(picture_task);
-                surfaces[surface_index.0].tasks.push(render_task_id);
-                PictureSurface::RenderTask(render_task_id)
-            }
             PictureCompositeMode::Filter(filter) => {
                 if let FilterOp::ColorMatrix(m) = filter {
                     if let Some(mut request) = frame_state.gpu_cache.request(&mut self.extra_gpu_data_handle) {
@@ -3094,7 +3094,7 @@ impl PicturePrimitive {
                     &pic_rect,
                     &transform,
                     &clipped,
-                    frame_context.device_pixel_scale,
+                    device_pixel_scale,
                     true,
                 );
 
@@ -3106,17 +3106,47 @@ impl PicturePrimitive {
                     child_tasks,
                     uv_rect_kind,
                     pic_context.raster_spatial_node_index,
+                    device_pixel_scale,
                 );
 
                 let render_task_id = frame_state.render_tasks.add(picture_task);
-                surfaces[surface_index.0].tasks.push(render_task_id);
+                frame_state.surfaces[surface_index.0].tasks.push(render_task_id);
                 PictureSurface::RenderTask(render_task_id)
             }
+            PictureCompositeMode::ComponentTransferFilter(handle) => {
+                let filter_data = &mut data_stores.filterdata[handle];
+                filter_data.update(frame_state);
+
+                let uv_rect_kind = calculate_uv_rect_kind(
+                    &pic_rect,
+                    &transform,
+                    &clipped,
+                    device_pixel_scale,
+                    true,
+                );
+
+                let picture_task = RenderTask::new_picture(
+                    RenderTaskLocation::Dynamic(None, clipped.size),
+                    unclipped.size,
+                    pic_index,
+                    clipped.origin,
+                    child_tasks,
+                    uv_rect_kind,
+                    pic_context.raster_spatial_node_index,
+                    device_pixel_scale,
+                );
+
+                let render_task_id = frame_state.render_tasks.add(picture_task);
+                frame_state.surfaces[surface_index.0].tasks.push(render_task_id);
+                PictureSurface::RenderTask(render_task_id)
+            }
+            PictureCompositeMode::Puppet { .. } |
+            PictureCompositeMode::MixBlend { .. } |
             PictureCompositeMode::Blit(_) => {
                 // The SplitComposite shader used for 3d contexts doesn't snap
                 // to pixels, so we shouldn't snap our uv coordinates either.
                 let supports_snapping = match self.context_3d {
-                    Picture3DContext::In{ .. } => false,
+                    Picture3DContext::In { .. } => false,
                     _ => true,
                 };
 
@@ -3124,7 +3154,7 @@ impl PicturePrimitive {
                     &pic_rect,
                     &transform,
                     &clipped,
-                    frame_context.device_pixel_scale,
+                    device_pixel_scale,
                     supports_snapping,
                 );
 
@@ -3136,15 +3166,16 @@ impl PicturePrimitive {
                     child_tasks,
                     uv_rect_kind,
                     pic_context.raster_spatial_node_index,
+                    device_pixel_scale,
                 );
 
                 let render_task_id = frame_state.render_tasks.add(picture_task);
-                surfaces[surface_index.0].tasks.push(render_task_id);
+                frame_state.surfaces[surface_index.0].tasks.push(render_task_id);
                 PictureSurface::RenderTask(render_task_id)
             }
         };
 
-        surfaces[raster_config.surface_index.0].surface = Some(surface);
+        frame_state.surfaces[raster_config.surface_index.0].surface = Some(surface);
 
         true
     }

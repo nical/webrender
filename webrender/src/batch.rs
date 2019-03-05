@@ -29,7 +29,7 @@ use scene::FilterOpHelpers;
 use smallvec::SmallVec;
 use std::{f32, i32, usize};
 use tiling::{RenderTargetContext};
-use util::{project_rect, TransformedRectKind};
+use util::{project_rect, MaxRect, TransformedRectKind};
 
 // Special sentinel value recognized by the shader. It is considered to be
 // a dummy task that doesn't mask out anything.
@@ -851,7 +851,7 @@ impl AlphaBatchBuilder {
                             [
                                 (run.reference_frame_relative_offset.x * 256.0) as i32,
                                 (run.reference_frame_relative_offset.y * 256.0) as i32,
-                                run.raster_space as i32,
+                                (run.inverse_raster_scale * 65535.0).round() as i32,
                             ],
                         );
                         let key = BatchKey::new(kind, blend_mode, textures);
@@ -866,7 +866,8 @@ impl AlphaBatchBuilder {
 
                         for glyph in glyphs {
                             batch.push(base_instance.build(
-                                glyph.index_in_text_run,
+                                glyph.index_in_text_run |
+                                (run.raster_space as i32) << 16,
                                 glyph.uv_rect_address.as_int(),
                                 (subpx_dir as u32 as i32) << 16 |
                                 (color_mode as u32 as i32),
@@ -978,10 +979,10 @@ impl AlphaBatchBuilder {
                     // Convert all children of the 3D hierarchy root into batches.
                     Picture3DContext::In { root_data: Some(ref list), .. } => {
                         for child in list {
-                            let prim_instance = &picture.prim_list.prim_instances[child.anchor];
-                            let prim_info = &ctx.scratch.prim_info[prim_instance.visibility_info.0 as usize];
+                            let child_prim_instance = &picture.prim_list.prim_instances[child.anchor];
+                            let child_prim_info = &ctx.scratch.prim_info[child_prim_instance.visibility_info.0 as usize];
 
-                            let child_pic_index = match prim_instance.kind {
+                            let child_pic_index = match child_prim_instance.kind {
                                 PrimitiveInstanceKind::Picture { pic_index, .. } => pic_index,
                                 PrimitiveInstanceKind::LineDecoration { .. } |
                                 PrimitiveInstanceKind::TextRun { .. } |
@@ -1002,14 +1003,14 @@ impl AlphaBatchBuilder {
                             // Get clip task, if set, for the picture primitive.
                             let clip_task_address = get_clip_task_address(
                                 &ctx.scratch.clip_mask_instances,
-                                prim_info.clip_task_index,
+                                child_prim_info.clip_task_index,
                                 0,
                                 render_tasks,
                             ).unwrap_or(OPAQUE_TASK_ADDRESS);
 
-                            let prim_header = PrimitiveHeader {
+                            let child_header = PrimitiveHeader {
                                 local_rect: pic.local_rect,
-                                local_clip_rect: prim_info.combined_local_clip_rect,
+                                local_clip_rect: child_prim_info.combined_local_clip_rect,
                                 task_address,
                                 specific_prim_address: GpuCacheAddress::invalid(),
                                 clip_task_address,
@@ -1036,7 +1037,7 @@ impl AlphaBatchBuilder {
                                     gpu_cache,
                                 );
 
-                            let prim_header_index = prim_headers.push(&prim_header, z_id, [
+                            let prim_header_index = prim_headers.push(&child_header, z_id, [
                                 uv_rect_address.as_int(),
                                 if raster_config.establishes_raster_root { 1 } else { 0 },
                                 0,
@@ -1056,7 +1057,7 @@ impl AlphaBatchBuilder {
 
                             self.current_batch_list().push_single_instance(
                                 key,
-                                &prim_info.clip_chain.pic_clip_rect,
+                                &child_prim_info.clip_chain.pic_clip_rect,
                                 z_id,
                                 PrimitiveInstanceData::from(instance),
                             );
@@ -1126,7 +1127,7 @@ impl AlphaBatchBuilder {
                                         // Get the local rect of the tile.
                                         let tile_rect = tile.local_rect;
 
-                                        let prim_header = PrimitiveHeader {
+                                        let tile_header = PrimitiveHeader {
                                             local_rect: tile_rect,
                                             local_clip_rect,
                                             task_address,
@@ -1135,7 +1136,7 @@ impl AlphaBatchBuilder {
                                             transform_id,
                                         };
 
-                                        let prim_header_index = prim_headers.push(&prim_header, z_id, [
+                                        let prim_header_index = prim_headers.push(&tile_header, z_id, [
                                             ShaderColorMode::Image as i32 | ((AlphaType::PremultipliedAlpha as i32) << 16),
                                             RasterizationSpace::Local as i32,
                                             get_shader_opacity(1.0),
@@ -1203,7 +1204,7 @@ impl AlphaBatchBuilder {
                                             .dirty_rects
                                             .iter()
                                             .map(|dirty_rect| {
-                                                (dirty_rect.world_rect * ctx.device_pixel_scale).round().to_i32()
+                                                (dirty_rect.world_rect * ctx.global_device_pixel_scale).round().to_i32()
                                             })
                                             .collect();
 
@@ -1387,6 +1388,7 @@ impl AlphaBatchBuilder {
                                             FilterOp::ColorMatrix(..) => 10,
                                             FilterOp::SrgbToLinear => 11,
                                             FilterOp::LinearToSrgb => 12,
+                                            FilterOp::ComponentTransfer => unreachable!(),
                                         };
 
                                         let user_data = match filter {
@@ -1412,6 +1414,7 @@ impl AlphaBatchBuilder {
                                             FilterOp::ColorMatrix(_) => {
                                                 picture.extra_gpu_data_handle.as_int(gpu_cache)
                                             }
+                                            FilterOp::ComponentTransfer => unreachable!(),
                                         };
 
                                         let (uv_rect_address, textures) = surface
@@ -1451,31 +1454,42 @@ impl AlphaBatchBuilder {
                                     }
                                 }
                             }
-                            PictureCompositeMode::MixBlend(mode) => {
+                            PictureCompositeMode::ComponentTransferFilter(handle) => {
+                                // This is basically the same as the general filter case above
+                                // except we store a little more data in the filter mode and
+                                // a gpu cache handle in the user data.
                                 let surface = ctx.surfaces[raster_config.surface_index.0]
                                     .surface
                                     .as_ref()
                                     .expect("bug: surface must be allocated by now");
-                                let cache_task_id = surface.resolve_render_task_id();
-                                let backdrop_id = picture.secondary_render_task_id.expect("no backdrop!?");
+
+
+                                let filter_data = &ctx.data_stores.filterdata[handle];
+                                let filter_mode : i32 = 13 |
+                                    ((filter_data.data.r_func.to_int() << 28 |
+                                      filter_data.data.g_func.to_int() << 24 |
+                                      filter_data.data.b_func.to_int() << 20 |
+                                      filter_data.data.a_func.to_int() << 16) as i32);
+
+                                let user_data = filter_data.gpu_cache_handle.as_int(gpu_cache);
+
+                                let (uv_rect_address, textures) = surface
+                                    .resolve(
+                                        render_tasks,
+                                        ctx.resource_cache,
+                                        gpu_cache,
+                                    );
 
                                 let key = BatchKey::new(
-                                    BatchKind::Brush(
-                                        BrushBatchKind::MixBlend {
-                                            task_id,
-                                            source_id: cache_task_id,
-                                            backdrop_id,
-                                        },
-                                    ),
+                                    BatchKind::Brush(BrushBatchKind::Blend),
                                     BlendMode::PremultipliedAlpha,
-                                    BatchTextures::no_texture(),
+                                    textures,
                                 );
-                                let backdrop_task_address = render_tasks.get_task_address(backdrop_id);
-                                let source_task_address = render_tasks.get_task_address(cache_task_id);
+
                                 let prim_header_index = prim_headers.push(&prim_header, z_id, [
-                                    mode as u32 as i32,
-                                    backdrop_task_address.0 as i32,
-                                    source_task_address.0 as i32,
+                                    uv_rect_address.as_int(),
+                                    filter_mode,
+                                    user_data,
                                 ]);
 
                                 let instance = BrushInstance {
@@ -1494,6 +1508,98 @@ impl AlphaBatchBuilder {
                                     PrimitiveInstanceData::from(instance),
                                 );
                             }
+                            PictureCompositeMode::Puppet { master: Some(source) } if ctx.is_picture_surface_visible(source) => return,
+                            PictureCompositeMode::MixBlend { mode, backdrop } if ctx.is_picture_surface_visible(backdrop) => {
+                                let backdrop_picture = &ctx.prim_store.pictures[backdrop.0];
+
+                                let source_id = ctx
+                                    .surfaces[raster_config.surface_index.0]
+                                    .surface
+                                    .as_ref()
+                                    .expect("bug: source surface must be allocated by now")
+                                    .resolve_render_task_id();
+                                let backdrop_surface_id = backdrop_picture.raster_config
+                                    .as_ref()
+                                    .unwrap()
+                                    .surface_index;
+                                let backdrop_id = ctx.surfaces[backdrop_surface_id.0]
+                                    .surface
+                                    .as_ref()
+                                    .expect("bug: backdrop surface must be allocated by now")
+                                    .resolve_render_task_id();
+
+                                let key = BatchKey::new(
+                                    BatchKind::Brush(
+                                        BrushBatchKind::MixBlend {
+                                            task_id,
+                                            source_id,
+                                            backdrop_id,
+                                        },
+                                    ),
+                                    non_segmented_blend_mode,
+                                    BatchTextures::no_texture(),
+                                );
+
+                                // The trick here is to draw the picture in the space of the backdrop,
+                                // since the source can be attached to a child spatial node.
+                                let expanded_header = PrimitiveHeader {
+                                    local_rect: ctx.clip_scroll_tree
+                                        .map_rect_to_parent_space(
+                                            prim_header.local_rect,
+                                            picture.spatial_node_index,
+                                            backdrop_picture.spatial_node_index,
+                                            &backdrop_picture.local_rect, //Note: this shouldn't be used
+                                        )
+                                        .unwrap_or_else(LayoutRect::zero)
+                                        .union(&backdrop_picture.local_rect),
+                                    local_clip_rect: ctx.clip_scroll_tree
+                                        .map_rect_to_parent_space(
+                                            prim_header.local_clip_rect,
+                                            picture.spatial_node_index,
+                                            backdrop_picture.spatial_node_index,
+                                            &backdrop_picture.local_clip_rect, //Note: this shouldn't be used
+                                        )
+                                        .unwrap_or_else(LayoutRect::zero)
+                                        .union(&backdrop_picture.local_clip_rect),
+                                    transform_id: transforms
+                                        .get_id(
+                                            backdrop_picture.spatial_node_index,
+                                            root_spatial_node_index,
+                                            ctx.clip_scroll_tree,
+                                        ),
+                                    ..prim_header
+                                };
+
+                                let backdrop_task_address = render_tasks.get_task_address(backdrop_id);
+                                let source_task_address = render_tasks.get_task_address(source_id);
+                                let prim_header_index = prim_headers.push(&expanded_header, z_id, [
+                                    mode as u32 as i32,
+                                    backdrop_task_address.0 as i32,
+                                    source_task_address.0 as i32,
+                                ]);
+
+                                let instance = BrushInstance {
+                                    prim_header_index,
+                                    clip_task_address,
+                                    segment_index: INVALID_SEGMENT_INDEX,
+                                    edge_flags: EdgeAaSegmentMask::empty(),
+                                    brush_flags,
+                                    user_data: 0,
+                                };
+                                //TODO: investigate if we can do better. We can't use the `bounding_rect`
+                                // here because we effectively merge the call with the backdrop,
+                                // and the instance for the backdrop isn't available here.
+                                let conservative_bounding_rect = PictureRect::max_rect();
+
+                                self.current_batch_list().push_single_instance(
+                                    key,
+                                    &conservative_bounding_rect,
+                                    z_id,
+                                    PrimitiveInstanceData::from(instance),
+                                );
+                            }
+                            PictureCompositeMode::Puppet { .. } |
+                            PictureCompositeMode::MixBlend { .. } |
                             PictureCompositeMode::Blit(_) => {
                                 let surface = ctx.surfaces[raster_config.surface_index.0]
                                     .surface
@@ -2539,12 +2645,11 @@ pub fn resolve_image(
     }
 }
 
-
-/// Batcher managing draw calls into the clip mask (in the RT cache).
+/// A list of clip instances to be drawn into a target.
 #[derive(Debug)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
-pub struct ClipBatcher {
+pub struct ClipBatchList {
     /// Rectangle draws fill up the rectangles with rounded corners.
     pub rectangles: Vec<ClipMaskInstance>,
     /// Image draws apply the image masking.
@@ -2552,12 +2657,40 @@ pub struct ClipBatcher {
     pub box_shadows: FastHashMap<TextureSource, Vec<ClipMaskInstance>>,
 }
 
-impl ClipBatcher {
-    pub fn new() -> Self {
-        ClipBatcher {
+impl ClipBatchList {
+    fn new() -> Self {
+        ClipBatchList {
             rectangles: Vec::new(),
             images: FastHashMap::default(),
             box_shadows: FastHashMap::default(),
+        }
+    }
+}
+
+/// Batcher managing draw calls into the clip mask (in the RT cache).
+#[derive(Debug)]
+#[cfg_attr(feature = "capture", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
+pub struct ClipBatcher {
+    /// The first clip in each clip task. This will overwrite all pixels
+    /// in the clip region, so we can skip doing a clear and write with
+    /// blending disabled, which is a big performance win on Intel GPUs.
+    pub primary_clips: ClipBatchList,
+    /// Any subsequent clip masks (rare) for a clip task get drawn in
+    /// a second pass with multiplicative blending enabled.
+    pub secondary_clips: ClipBatchList,
+
+    gpu_supports_fast_clears: bool,
+}
+
+impl ClipBatcher {
+    pub fn new(
+        gpu_supports_fast_clears: bool,
+    ) -> Self {
+        ClipBatcher {
+            primary_clips: ClipBatchList::new(),
+            secondary_clips: ClipBatchList::new(),
+            gpu_supports_fast_clears,
         }
     }
 
@@ -2580,7 +2713,7 @@ impl ClipBatcher {
             snap_offsets: SnapOffsets::empty(),
         };
 
-        self.rectangles.push(instance);
+        self.primary_clips.rectangles.push(instance);
     }
 
     /// Where appropriate, draw a clip rectangle as a small series of tiles,
@@ -2595,6 +2728,7 @@ impl ClipBatcher {
         device_pixel_scale: DevicePixelScale,
         gpu_address: GpuCacheAddress,
         instance: &ClipMaskInstance,
+        is_first_clip: bool,
     ) -> bool {
         // Only try to draw in tiles if the clip mark is big enough.
         if mask_screen_rect.area() < CLIP_RECTANGLE_AREA_THRESHOLD {
@@ -2636,6 +2770,7 @@ impl ClipBatcher {
         // and only for rectangles (not rounded etc), the world_device_rect is not conservative - we know
         // that there is no inner_rect, and the world_device_rect should be the real, axis-aligned clip rect.
         let mask_origin = mask_screen_rect.origin.to_f32().to_vector();
+        let clip_list = self.get_batch_list(is_first_clip);
 
         for y in 0 .. y_tiles {
             for x in 0 .. x_tiles {
@@ -2660,7 +2795,7 @@ impl ClipBatcher {
                 // these pixels would be redundant - since this clip can't possibly
                 // affect the pixels in this tile, skip them!
                 if !world_device_rect.contains_rect(&world_sub_rect) {
-                    self.rectangles.push(ClipMaskInstance {
+                    clip_list.rectangles.push(ClipMaskInstance {
                         clip_data_address: gpu_address,
                         sub_rect: normalized_sub_rect,
                         ..*instance
@@ -2670,6 +2805,19 @@ impl ClipBatcher {
         }
 
         true
+    }
+
+    /// Retrieve the correct clip batch list to append to, depending
+    /// on whether this is the first clip mask for a clip task.
+    fn get_batch_list(
+        &mut self,
+        is_first_clip: bool,
+    ) -> &mut ClipBatchList {
+        if is_first_clip && !self.gpu_supports_fast_clears {
+            &mut self.primary_clips
+        } else {
+            &mut self.secondary_clips
+        }
     }
 
     pub fn add(
@@ -2688,6 +2836,8 @@ impl ClipBatcher {
         device_pixel_scale: DevicePixelScale,
         snap_offsets: SnapOffsets,
     ) {
+        let mut is_first_clip = true;
+
         for i in 0 .. clip_node_range.count {
             let clip_instance = clip_store.get_instance_from_range(&clip_node_range, i);
             let clip_node = &clip_data_store[clip_instance.handle];
@@ -2719,7 +2869,7 @@ impl ClipBatcher {
                 snap_offsets,
             };
 
-            match clip_node.item {
+            let added_clip = match clip_node.item {
                 ClipItem::Image { image, size, .. } => {
                     let request = ImageRequest {
                         key: image,
@@ -2739,7 +2889,9 @@ impl ClipBatcher {
                                 return;
                             }
                         };
-                        self.images
+
+                        self.get_batch_list(is_first_clip)
+                            .images
                             .entry(cache_item.texture_id)
                             .or_insert(Vec::new())
                             .push(ClipMaskInstance {
@@ -2764,6 +2916,8 @@ impl ClipBatcher {
                             add_image(request, mask_rect)
                         }
                     }
+
+                    true
                 }
                 ClipItem::BoxShadow(ref info) => {
                     let gpu_address =
@@ -2778,7 +2932,8 @@ impl ClipBatcher {
                         .get_texture_cache_item(&rt_cache_entry.handle);
                     debug_assert_ne!(cache_item.texture_id, TextureSource::Invalid);
 
-                    self.box_shadows
+                    self.get_batch_list(is_first_clip)
+                        .box_shadows
                         .entry(cache_item.texture_id)
                         .or_insert(Vec::new())
                         .push(ClipMaskInstance {
@@ -2786,17 +2941,25 @@ impl ClipBatcher {
                             resource_address: gpu_cache.get_address(&cache_item.uv_rect_handle),
                             ..instance
                         });
+
+                    true
                 }
                 ClipItem::Rectangle(_, ClipMode::ClipOut) => {
                     let gpu_address =
                         gpu_cache.get_address(&clip_node.gpu_cache_handle);
-                    self.rectangles.push(ClipMaskInstance {
-                        clip_data_address: gpu_address,
-                        ..instance
-                    });
+                    self.get_batch_list(is_first_clip)
+                        .rectangles
+                        .push(ClipMaskInstance {
+                            clip_data_address: gpu_address,
+                            ..instance
+                        });
+
+                    true
                 }
                 ClipItem::Rectangle(clip_rect_size, ClipMode::Clip) => {
-                    if !clip_instance.flags.contains(ClipNodeFlags::SAME_COORD_SYSTEM) {
+                    if clip_instance.flags.contains(ClipNodeFlags::SAME_COORD_SYSTEM) {
+                        false
+                    } else {
                         let gpu_address = gpu_cache.get_address(&clip_node.gpu_cache_handle);
 
                         if !self.add_tiled_clip_mask(
@@ -2808,23 +2971,34 @@ impl ClipBatcher {
                             device_pixel_scale,
                             gpu_address,
                             &instance,
+                            is_first_clip,
                         ) {
-                            self.rectangles.push(ClipMaskInstance {
-                                clip_data_address: gpu_address,
-                                ..instance
-                            });
+                            self.get_batch_list(is_first_clip)
+                                .rectangles
+                                .push(ClipMaskInstance {
+                                    clip_data_address: gpu_address,
+                                    ..instance
+                                });
                         }
+
+                        true
                     }
                 }
                 ClipItem::RoundedRectangle(..) => {
                     let gpu_address =
                         gpu_cache.get_address(&clip_node.gpu_cache_handle);
-                    self.rectangles.push(ClipMaskInstance {
-                        clip_data_address: gpu_address,
-                        ..instance
-                    });
+                    self.get_batch_list(is_first_clip)
+                        .rectangles
+                        .push(ClipMaskInstance {
+                            clip_data_address: gpu_address,
+                            ..instance
+                        });
+
+                    true
                 }
-            }
+            };
+
+            is_first_clip &= !added_clip;
         }
     }
 }

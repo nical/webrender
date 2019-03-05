@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 use api::{ColorF, BorderStyle, DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixelScale};
-use api::{DocumentLayer, FilterOp, ImageFormat, DevicePoint};
+use api::{DocumentLayer, FilterOp, FilterData, ImageFormat, DevicePoint};
 use api::{MixBlendMode, PipelineId, DeviceRect, LayoutSize, WorldRect};
 use batch::{AlphaBatchBuilder, AlphaBatchContainer, ClipBatcher, resolve_image};
 use clip::ClipStore;
@@ -20,7 +20,7 @@ use internal_types::{CacheTextureId, FastHashMap, SavedTargetIndex, TextureSourc
 #[cfg(feature = "pathfinder")]
 use pathfinder_partitioner::mesh::Mesh;
 use picture::{RecordedDirtyRegion, SurfaceInfo};
-use prim_store::{PrimitiveStore, DeferredResolve, PrimitiveScratchBuffer};
+use prim_store::{PictureIndex, PrimitiveStore, DeferredResolve, PrimitiveScratchBuffer};
 use profiler::FrameProfileCounters;
 use render_backend::{DataStores, FrameId};
 use render_task::{BlitSource, RenderTaskAddress, RenderTaskId, RenderTaskKind};
@@ -50,7 +50,7 @@ const TEXTURE_DIMENSION_MASK: i32 = 0xFF;
 pub struct RenderTargetIndex(pub usize);
 
 pub struct RenderTargetContext<'a, 'rc> {
-    pub device_pixel_scale: DevicePixelScale,
+    pub global_device_pixel_scale: DevicePixelScale,
     pub prim_store: &'a PrimitiveStore,
     pub resource_cache: &'rc mut ResourceCache,
     pub use_dual_source_blending: bool,
@@ -60,6 +60,18 @@ pub struct RenderTargetContext<'a, 'rc> {
     pub scratch: &'a PrimitiveScratchBuffer,
     pub screen_world_rect: WorldRect,
     pub globals: &'a FrameGlobalResources,
+}
+
+impl<'a, 'rc> RenderTargetContext<'a, 'rc> {
+    /// Returns true if a picture has a surface that is visible.
+    pub fn is_picture_surface_visible(&self, index: PictureIndex) -> bool {
+        match self.prim_store.pictures[index.0].raster_config {
+            Some(ref raster_config) => {
+                self.surfaces[raster_config.surface_index.0].surface.is_some()
+            }
+            None => false,
+        }
+    }
 }
 
 /// Represents a number of rendering operations on a surface.
@@ -77,7 +89,10 @@ pub struct RenderTargetContext<'a, 'rc> {
 /// and sometimes on its parameters. See `RenderTask::target_kind`.
 pub trait RenderTarget {
     /// Creates a new RenderTarget of the given type.
-    fn new(screen_size: DeviceIntSize) -> Self;
+    fn new(
+        screen_size: DeviceIntSize,
+        gpu_supports_fast_clears: bool,
+    ) -> Self;
 
     /// Optional hook to provide additional processing for the target at the
     /// end of the build phase.
@@ -170,12 +185,14 @@ pub struct RenderTargetList<T> {
     pub targets: Vec<T>,
     pub saved_index: Option<SavedTargetIndex>,
     pub alloc_tracker: ArrayAllocationTracker,
+    gpu_supports_fast_clears: bool,
 }
 
 impl<T: RenderTarget> RenderTargetList<T> {
     fn new(
         screen_size: DeviceIntSize,
         format: ImageFormat,
+        gpu_supports_fast_clears: bool,
     ) -> Self {
         RenderTargetList {
             screen_size,
@@ -184,6 +201,7 @@ impl<T: RenderTarget> RenderTargetList<T> {
             targets: Vec::new(),
             saved_index: None,
             alloc_tracker: ArrayAllocationTracker::new(),
+            gpu_supports_fast_clears,
         }
     }
 
@@ -236,7 +254,7 @@ impl<T: RenderTarget> RenderTargetList<T> {
                 assert!(alloc_size.width <= allocator_dimensions.width &&
                     alloc_size.height <= allocator_dimensions.height);
                 let slice = FreeRectSlice(self.targets.len() as u32);
-                self.targets.push(T::new(self.screen_size));
+                self.targets.push(T::new(self.screen_size, self.gpu_supports_fast_clears));
 
                 self.alloc_tracker.extend(
                     slice,
@@ -250,7 +268,7 @@ impl<T: RenderTarget> RenderTargetList<T> {
 
         if alloc_size.is_empty_or_negative() && self.targets.is_empty() {
             // push an unused target here, only if we don't have any
-            self.targets.push(T::new(self.screen_size));
+            self.targets.push(T::new(self.screen_size, self.gpu_supports_fast_clears));
         }
 
         self.targets[free_rect_slice.0 as usize]
@@ -342,7 +360,6 @@ pub struct ColorRenderTarget {
     // List of blur operations to apply for this render target.
     pub vertical_blurs: Vec<BlurInstance>,
     pub horizontal_blurs: Vec<BlurInstance>,
-    pub readbacks: Vec<DeviceIntRect>,
     pub scalings: Vec<ScalingInstance>,
     pub blits: Vec<BlitJob>,
     // List of frame buffer outputs for this render target.
@@ -356,12 +373,14 @@ pub struct ColorRenderTarget {
 }
 
 impl RenderTarget for ColorRenderTarget {
-    fn new(screen_size: DeviceIntSize) -> Self {
+    fn new(
+        screen_size: DeviceIntSize,
+        _: bool,
+    ) -> Self {
         ColorRenderTarget {
             alpha_batch_containers: Vec::new(),
             vertical_blurs: Vec::new(),
             horizontal_blurs: Vec::new(),
-            readbacks: Vec::new(),
             scalings: Vec::new(),
             blits: Vec::new(),
             outputs: Vec::new(),
@@ -391,6 +410,7 @@ impl RenderTarget for ColorRenderTarget {
                 ClearMode::Zero => {
                     panic!("bug: invalid clear mode for color task");
                 }
+                ClearMode::DontCare |
                 ClearMode::Transparent => {}
             }
 
@@ -492,9 +512,6 @@ impl RenderTarget for ColorRenderTarget {
                 // FIXME(pcwalton): Support color glyphs.
                 panic!("Glyphs should not be added to color target!");
             }
-            RenderTaskKind::Readback(device_rect) => {
-                self.readbacks.push(device_rect);
-            }
             RenderTaskKind::Scaling(..) => {
                 self.scalings.push(ScalingInstance {
                     task_address: render_tasks.get_task_address(task_id),
@@ -578,6 +595,7 @@ pub struct AlphaRenderTarget {
     pub horizontal_blurs: Vec<BlurInstance>,
     pub scalings: Vec<ScalingInstance>,
     pub zero_clears: Vec<RenderTaskId>,
+    pub one_clears: Vec<RenderTaskId>,
     // Track the used rect of the render target, so that
     // we can set a scissor rect and only clear to the
     // used portion of the target as an optimization.
@@ -585,13 +603,17 @@ pub struct AlphaRenderTarget {
 }
 
 impl RenderTarget for AlphaRenderTarget {
-    fn new(_screen_size: DeviceIntSize) -> Self {
+    fn new(
+        _screen_size: DeviceIntSize,
+        gpu_supports_fast_clears: bool,
+    ) -> Self {
         AlphaRenderTarget {
-            clip_batcher: ClipBatcher::new(),
+            clip_batcher: ClipBatcher::new(gpu_supports_fast_clears),
             vertical_blurs: Vec::new(),
             horizontal_blurs: Vec::new(),
             scalings: Vec::new(),
             zero_clears: Vec::new(),
+            one_clears: Vec::new(),
             used_rect: DeviceIntRect::zero(),
         }
     }
@@ -612,14 +634,16 @@ impl RenderTarget for AlphaRenderTarget {
             ClearMode::Zero => {
                 self.zero_clears.push(task_id);
             }
-            ClearMode::One => {}
+            ClearMode::One => {
+                self.one_clears.push(task_id);
+            }
+            ClearMode::DontCare => {}
             ClearMode::Transparent => {
                 panic!("bug: invalid clear mode for alpha task");
             }
         }
 
         match task.kind {
-            RenderTaskKind::Readback(..) |
             RenderTaskKind::Picture(..) |
             RenderTaskKind::Blit(..) |
             RenderTaskKind::Border(..) |
@@ -657,7 +681,7 @@ impl RenderTarget for AlphaRenderTarget {
                     &ctx.data_stores.clip,
                     task_info.actual_rect,
                     &ctx.screen_world_rect,
-                    ctx.device_pixel_scale,
+                    task_info.device_pixel_scale,
                     task_info.snap_offsets,
                 );
             }
@@ -801,7 +825,6 @@ impl TextureCacheRenderTarget {
             RenderTaskKind::Picture(..) |
             RenderTaskKind::ClipRegion(..) |
             RenderTaskKind::CacheMask(..) |
-            RenderTaskKind::Readback(..) |
             RenderTaskKind::Scaling(..) => {
                 panic!("BUG: unexpected task kind for texture cache target");
             }
@@ -858,8 +881,11 @@ pub struct RenderPass {
 impl RenderPass {
     /// Creates a pass for the main framebuffer. There is only one of these, and
     /// it is always the last pass.
-    pub fn new_main_framebuffer(screen_size: DeviceIntSize) -> Self {
-        let target = ColorRenderTarget::new(screen_size);
+    pub fn new_main_framebuffer(
+        screen_size: DeviceIntSize,
+        gpu_supports_fast_clears: bool,
+    ) -> Self {
+        let target = ColorRenderTarget::new(screen_size, gpu_supports_fast_clears);
         RenderPass {
             kind: RenderPassKind::MainFramebuffer(target),
             tasks: vec![],
@@ -867,11 +893,22 @@ impl RenderPass {
     }
 
     /// Creates an intermediate off-screen pass.
-    pub fn new_off_screen(screen_size: DeviceIntSize) -> Self {
+    pub fn new_off_screen(
+        screen_size: DeviceIntSize,
+        gpu_supports_fast_clears: bool,
+    ) -> Self {
         RenderPass {
             kind: RenderPassKind::OffScreen {
-                color: RenderTargetList::new(screen_size, ImageFormat::BGRA8),
-                alpha: RenderTargetList::new(screen_size, ImageFormat::R8),
+                color: RenderTargetList::new(
+                    screen_size,
+                    ImageFormat::BGRA8,
+                    gpu_supports_fast_clears,
+                ),
+                alpha: RenderTargetList::new(
+                    screen_size,
+                    ImageFormat::R8,
+                    gpu_supports_fast_clears,
+                ),
                 texture_cache: FastHashMap::default(),
             },
             tasks: vec![],
@@ -1068,21 +1105,25 @@ impl RenderPass {
 pub struct CompositeOps {
     // Requires only a single texture as input (e.g. most filters)
     pub filters: Vec<FilterOp>,
+    pub filter_datas: Vec<FilterData>,
 
     // Requires two source textures (e.g. mix-blend-mode)
     pub mix_blend_mode: Option<MixBlendMode>,
 }
 
 impl CompositeOps {
-    pub fn new(filters: Vec<FilterOp>, mix_blend_mode: Option<MixBlendMode>) -> Self {
+    pub fn new(filters: Vec<FilterOp>,
+               filter_datas: Vec<FilterData>,
+               mix_blend_mode: Option<MixBlendMode>) -> Self {
         CompositeOps {
             filters,
+            filter_datas,
             mix_blend_mode,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.filters.is_empty() && self.mix_blend_mode.is_none()
+        self.filters.is_empty() && self.filter_datas.is_empty() && self.mix_blend_mode.is_none()
     }
 }
 
@@ -1096,7 +1137,6 @@ pub struct Frame {
     pub inner_rect: DeviceIntRect,
     pub background_color: Option<ColorF>,
     pub layer: DocumentLayer,
-    pub device_pixel_ratio: f32,
     pub passes: Vec<RenderPass>,
     #[cfg_attr(any(feature = "capture", feature = "replay"), serde(default = "FrameProfileCounters::new", skip))]
     pub profile_counters: FrameProfileCounters,
