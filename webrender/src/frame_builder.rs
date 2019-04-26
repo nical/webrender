@@ -30,7 +30,6 @@ use std::{f32, mem};
 use std::sync::Arc;
 use tiling::{Frame, RenderPassKind, RenderTargetContext, RenderTarget};
 
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
 #[cfg_attr(feature = "replay", derive(Deserialize))]
