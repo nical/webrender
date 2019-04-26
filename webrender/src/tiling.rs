@@ -29,7 +29,7 @@ use render_backend::{DataStores, FrameId};
 use render_task::{BlitSource, RenderTaskAddress, RenderTaskId, RenderTaskKind};
 use render_task::{BlurTask, ClearMode, GlyphTask, RenderTaskLocation, RenderTaskTree, ScalingTask};
 use resource_cache::ResourceCache;
-use std::{cmp, usize, f32, i32, mem};
+use std::{cmp, usize, f32, i32, mem, io};
 use texture_allocator::{ArrayAllocationTracker, FreeRectSlice};
 
 
@@ -1249,4 +1249,86 @@ impl ScalingTask {
 
         instances.push(instance);
     }
+}
+
+pub fn dump_render_tasks_as_svg(
+    render_tasks: &RenderTaskTree,
+    passes: &[RenderPass],
+    output: &mut dyn io::Write,
+) -> io::Result<()> {
+    use svg_fmt::*;
+
+    let node_width = 80.0;
+    let node_height = 40.0;
+    let texture_box_height = 15.0;
+    let vertical_spacing = 10.0;
+    let horizontal_spacing = 40.0;
+    let margin = 10.0;
+    let text_size = 10.0;
+
+    let mut pass_rects = Vec::new();
+    let mut tasks = Vec::new();
+    let mut x = margin;
+    let mut max_y: f32 = 0.0;
+
+    for pass in passes {
+        let mut layout = VerticalLayout::new(x, margin, node_width);
+
+        for task_id in &pass.tasks {
+            let task = &render_tasks.tasks[task_id.index as usize];
+
+            let rect = layout.push_rectangle(node_height)
+                .fill(rgb(200, 200, 200))
+                .border_radius(5.0);
+
+            let tx = rect.x + rect.w / 2.0;
+            let ty = rect.y + 10.0;
+
+            let label = text(tx, ty, task.kind.as_str())
+                .size(text_size)
+                .align(Align::Center)
+                .color(rgb(50, 50, 50));
+
+            let size = text(tx, ty + 12.0, format!("{}", task.location.size()))
+                .size(text_size * 0.7)
+                .align(Align::Center)
+                .color(rgb(50, 50, 50));
+
+            tasks.push((rect, label, size));
+
+            layout.advance(vertical_spacing);
+        }
+
+        pass_rects.push(
+            layout.total_rectangle()
+                .inflate(2.0, 2.0)
+                .border_radius(8.0)
+                .fill(black())
+        );
+
+        x += node_width + horizontal_spacing;
+        max_y = max_y.max(layout.y + margin);
+    }
+
+    let svg_w = x + margin;
+    let svg_h = max_y + margin;
+    writeln!(output, "{:?}", BeginSvg { w: svg_w, h: svg_h })?;
+    // Background.
+    writeln!(output, "    {:?}",
+        rectangle(0.0, 0.0, svg_w, svg_h)
+            .inflate(1.0, 1.0)
+            .fill(rgb(50, 50, 50))
+    )?;
+
+    for rect in &pass_rects {
+        writeln!(output, "    {:?}", rect)?;
+    }
+
+    for task in &tasks {
+        writeln!(output, "    {:?}", task.0)?;
+        writeln!(output, "    {:?}", task.1)?;
+        writeln!(output, "    {:?}", task.2)?;
+    }
+
+    writeln!(output, "{:?}", EndSvg)
 }

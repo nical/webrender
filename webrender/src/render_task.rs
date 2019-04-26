@@ -344,6 +344,14 @@ impl RenderTaskLocation {
             _ => false,
         }
     }
+
+    pub fn size(&self) -> DeviceIntSize {
+        match self {
+            RenderTaskLocation::Fixed(rect) => rect.size,
+            RenderTaskLocation::Dynamic(_, size) => *size,
+            RenderTaskLocation::TextureCache { rect, .. } => rect.size,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -507,6 +515,25 @@ pub enum RenderTaskKind {
     Border(BorderTask),
     LineDecoration(LineDecorationTask),
     Gradient(GradientTask),
+}
+
+impl RenderTaskKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            &RenderTaskKind::Picture(..) => "Picture",
+            &RenderTaskKind::CacheMask(..) => "CacheMask",
+            &RenderTaskKind::ClipRegion(..) => "ClipRegion",
+            &RenderTaskKind::VerticalBlur(..) => "VerticalBlur",
+            &RenderTaskKind::HorizontalBlur(..) => "HorizontalBlur",
+            &RenderTaskKind::Glyph(..) => "Glyph",
+            &RenderTaskKind::Readback(..) => "Readback",
+            &RenderTaskKind::Scaling(..) => "Scaling",
+            &RenderTaskKind::Blit(..) => "Blit",
+            &RenderTaskKind::Border(..) => "Border",
+            &RenderTaskKind::LineDecoration(..) => "LineDecoration",
+            &RenderTaskKind::Gradient(..) => "Gradient",
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]

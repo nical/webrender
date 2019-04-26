@@ -29,7 +29,7 @@ use segment::SegmentBuilder;
 use std::{f32, mem};
 use std::sync::Arc;
 use tiling::{Frame, RenderPassKind, RenderTargetContext, RenderTarget};
-
+use tiling::dump_render_tasks_as_svg;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "capture", derive(Serialize))]
@@ -572,6 +572,10 @@ impl FrameBuilder {
                 self.config.gpu_supports_fast_clears,
                 &mut passes,
             );
+
+            let mut svg_file = ::std::fs::File::create("render-tasks.svg")
+                .expect("Failed to open the SVG file.");
+            dump_render_tasks_as_svg(&render_tasks, &passes, &mut svg_file).unwrap();
 
             // Used to generated a unique z-buffer value per primitive.
             let mut z_generator = ZBufferIdGenerator::new(layer);
