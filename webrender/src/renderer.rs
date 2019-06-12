@@ -3558,7 +3558,7 @@ impl Renderer {
                     }
 
                     self.shaders.borrow_mut()
-                        .get(&batch.key, self.debug_flags)
+                        .get(&batch.key, batch.features, self.debug_flags)
                         .bind(
                             &mut self.device, projection,
                             &mut self.renderer_errors,
@@ -3621,7 +3621,7 @@ impl Renderer {
                     }
 
                     self.shaders.borrow_mut()
-                        .get(&batch.key, self.debug_flags)
+                        .get(&batch.key, batch.features, self.debug_flags)
                         .bind(
                             &mut self.device, projection,
                             &mut self.renderer_errors,

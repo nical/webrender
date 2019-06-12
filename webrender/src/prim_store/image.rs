@@ -65,6 +65,7 @@ pub struct ImageInstance {
     pub segment_instance_index: SegmentInstanceIndex,
     pub tight_local_clip_rect: LayoutRect,
     pub visible_tiles: Vec<VisibleImageTile>,
+    pub may_need_repetition: bool
 }
 
 #[cfg_attr(feature = "capture", derive(Serialize))]
@@ -331,6 +332,7 @@ impl InternablePrimitive for Image {
             segment_instance_index: SegmentInstanceIndex::INVALID,
             tight_local_clip_rect: LayoutRect::zero(),
             visible_tiles: Vec::new(),
+            may_need_repetition: true,
         });
 
         PrimitiveInstanceKind::Image {

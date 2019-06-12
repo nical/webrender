@@ -2279,6 +2279,14 @@ impl PrimitiveStore {
 
                 match image_properties {
                     Some(ImageProperties { tiling: None, .. }) => {
+                        if image_data.tile_spacing.width == 0.0 &&
+                            image_data.tile_spacing.height == 0.0 &&
+                            image_data.stretch_size.width >= common_data.prim_size.width &&
+                            image_data.stretch_size.height >= common_data.prim_size.height {
+
+                            image_instance.may_need_repetition = false;
+                        }
+
                         frame_state.resource_cache.request_image(
                             request,
                             frame_state.gpu_cache,
@@ -2309,6 +2317,10 @@ impl PrimitiveStore {
                         let base_edge_flags = edge_flags_for_tile_spacing(&image_data.tile_spacing);
 
                         let stride = image_data.stretch_size + image_data.tile_spacing;
+
+                        // We are performing the decomposition on the CPU here, no need to
+                        // have it in the shader.
+                        image_instance.may_need_repetition = false;
 
                         let repetitions = crate::image::repetitions(
                             &prim_rect,
